@@ -157,7 +157,7 @@ const AmbientTree = ({ state, score, transitionSpeed }: AmbientTreeProps) => {
                 transform={`rotate(${leaf.rotation}, ${leaf.cx}, ${leaf.cy})`}
                 style={{
                   opacity: visible ? 0.75 : 0,
-                  transition: `opacity ${durationMs}ms ease-out, fill ${durationMs}ms ease-out`,
+                  transition: visible ? `opacity ${durationMs}ms ease-out, fill ${durationMs}ms ease-out` : 'opacity 0s',
                 }}
               />
               {visible && (
