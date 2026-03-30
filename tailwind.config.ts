@@ -12,8 +12,22 @@ export default {
         "2xl": "1400px",
       },
     },
+    fontFamily: {
+      display: ['"DM Serif Display"', 'serif'],
+      body: ['"IBM Plex Sans"', 'sans-serif'],
+    },
     extend: {
       colors: {
+        fe: {
+          DEFAULT: "hsl(var(--fe-blue))",
+          foreground: "hsl(var(--fe-blue-foreground))",
+        },
+        tree: {
+          dead: "hsl(var(--tree-dead))",
+          weak: "hsl(var(--tree-weak))",
+          healthy: "hsl(var(--tree-healthy))",
+          thriving: "hsl(var(--tree-thriving))",
+        },
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
