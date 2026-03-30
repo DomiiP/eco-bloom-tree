@@ -1,17 +1,15 @@
 import { useState, useMemo } from "react";
-import { Zap, Droplets, Car, TreeDeciduous } from "lucide-react";
+import { Zap, Droplets, TreeDeciduous, Timer } from "lucide-react";
 import AmbientTree from "@/components/AmbientTree";
 import ConsumptionSlider from "@/components/ConsumptionSlider";
 import InfoPanel from "@/components/InfoPanel";
 
 type TreeState = "dead" | "weak" | "healthy" | "thriving";
 
-function calculateScore(electricity: number, water: number, mobility: number): number {
-  // Lower consumption = higher score
+function calculateScore(electricity: number, water: number): number {
   const elecScore = Math.max(0, 100 - (electricity / 50) * 100);
   const waterScore = Math.max(0, 100 - (water / 300) * 100);
-  const mobilityScore = Math.max(0, 100 - (mobility / 200) * 100);
-  return Math.round(elecScore * 0.4 + waterScore * 0.3 + mobilityScore * 0.3);
+  return Math.round(elecScore * 0.55 + waterScore * 0.45);
 }
 
 function getTreeState(score: number): TreeState {
@@ -22,16 +20,15 @@ function getTreeState(score: number): TreeState {
 }
 
 const Index = () => {
-  const [electricity, setElectricity] = useState(15); // kWh/day
-  const [water, setWater] = useState(120); // L/day
-  const [mobility, setMobility] = useState(30); // km/day by car
+  const [electricity, setElectricity] = useState(15);
+  const [water, setWater] = useState(120);
+  const [transitionSpeed, setTransitionSpeed] = useState(3);
 
-  const score = useMemo(() => calculateScore(electricity, water, mobility), [electricity, water, mobility]);
+  const score = useMemo(() => calculateScore(electricity, water), [electricity, water]);
   const treeState = getTreeState(score);
 
   return (
     <div className="min-h-screen bg-background font-body">
-      {/* Header */}
       <header className="border-b border-border bg-card/80 backdrop-blur-sm sticky top-0 z-10">
         <div className="container max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -50,24 +47,21 @@ const Index = () => {
       </header>
 
       <main className="container max-w-6xl mx-auto px-4 py-8">
-        {/* Hero */}
         <div className="text-center mb-10">
           <h2 className="font-display text-3xl md:text-4xl text-foreground mb-3">
             Ambientni prikaz ogljičnega odtisa
           </h2>
           <p className="text-muted-foreground font-body max-w-lg mx-auto text-sm leading-relaxed">
-            Spreminjajte porabo elektrike, vode in mobilnosti ter opazujte, kako vaše vedenje vpliva na digitalno drevo. Koncept za HCI raziskavo na FE UNI-LJ.
+            Spreminjajte porabo elektrike in vode ter opazujte, kako vaše vedenje vpliva na digitalno drevo. Koncept za HCI raziskavo na FE UNI-LJ.
           </p>
         </div>
 
         <div className="grid lg:grid-cols-5 gap-8 items-start">
-          {/* Tree visualization - ambient display */}
           <div className="lg:col-span-3 flex flex-col items-center">
             <div className="w-full max-w-lg p-8 rounded-2xl bg-card border border-border shadow-sm">
-              <AmbientTree state={treeState} score={score} />
+              <AmbientTree state={treeState} score={score} transitionSpeed={transitionSpeed} />
             </div>
-            
-            {/* Score bar */}
+
             <div className="w-full max-w-lg mt-4">
               <div className="h-2 rounded-full bg-secondary overflow-hidden">
                 <div
@@ -90,7 +84,6 @@ const Index = () => {
             </div>
           </div>
 
-          {/* Controls - reflective UI (phone-like) */}
           <div className="lg:col-span-2 space-y-4">
             <div className="p-1 rounded-2xl border border-border bg-card/50">
               <div className="p-3 border-b border-border">
@@ -121,15 +114,15 @@ const Index = () => {
                   color="hsl(210, 85%, 50%)"
                 />
                 <ConsumptionSlider
-                  label="Mobilnost (avto)"
-                  value={mobility}
-                  min={0}
-                  max={200}
-                  step={5}
-                  unit="km/dan"
-                  icon={Car}
-                  onChange={setMobility}
-                  color="hsl(0, 50%, 50%)"
+                  label="Hitrost sprememb"
+                  value={transitionSpeed}
+                  min={1}
+                  max={5}
+                  step={1}
+                  unit=""
+                  icon={Timer}
+                  onChange={setTransitionSpeed}
+                  color="hsl(var(--muted-foreground))"
                 />
               </div>
             </div>
@@ -138,7 +131,6 @@ const Index = () => {
           </div>
         </div>
 
-        {/* Footer */}
         <footer className="mt-16 pt-6 border-t border-border text-center">
           <p className="text-xs text-muted-foreground font-body">
             Prototip za HCI raziskavo • Fakulteta za elektrotehniko, Univerza v Ljubljani •{" "}
