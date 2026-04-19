@@ -183,7 +183,7 @@ const TreeMaintenanceView = () => {
           <div className="space-y-2 pt-2 border-t border-border">
             <div className="flex items-center justify-between text-sm">
               <div className="flex items-center gap-2">
-                <Droplets className="w-4 h-4 text-blue-500" />
+                <Droplets className="w-4 h-4" style={{ color: "hsl(var(--weather-storm))" }} />
                 <span className="font-body font-medium">Voda</span>
               </div>
               <span className="text-xs text-muted-foreground">
