@@ -45,6 +45,21 @@ All colors MUST be HSL.
     --tree-healthy: 142 50% 40%;
     --tree-thriving: 142 65% 30%;
 
+    --weather-drought: 28 85% 55%;
+    --weather-drought-foreground: 28 90% 18%;
+    --weather-heat: 0 75% 55%;
+    --weather-heat-foreground: 0 80% 20%;
+    --weather-storm: 220 75% 50%;
+    --weather-storm-foreground: 220 80% 18%;
+    --event-vacation: 200 70% 50%;
+    --event-vacation-foreground: 200 80% 18%;
+    --event-guests: 280 60% 55%;
+    --event-guests-foreground: 280 70% 20%;
+    --event-weekend: 142 40% 45%;
+    --event-weekend-foreground: 142 60% 18%;
+    --event-holiday: 340 75% 55%;
+    --event-holiday-foreground: 340 80% 20%;
+
     --sidebar-background: 0 0% 98%;
     --sidebar-foreground: 240 5.3% 26.1%;
     --sidebar-primary: 240 5.9% 10%;

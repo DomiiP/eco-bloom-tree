@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Droplets, Zap, Sun, CloudRain, Cloud, Thermometer } from "lucide-react";
+import { Droplets, Zap, Sun, CloudRain, Thermometer } from "lucide-react";
 import AmbientTree from "@/components/AmbientTree";
 import SimulationControls from "@/components/SimulationControls";
 import YearTimeline from "@/components/YearTimeline";
@@ -152,23 +152,29 @@ const TreeMaintenanceView = () => {
               {date.dayOfMonth}. {date.monthName}
             </h3>
             <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              {todayWeather.isDrought && <span className="px-2 py-0.5 rounded bg-orange-100 text-orange-800">Suša</span>}
-              {todayWeather.isHeatwave && <span className="px-2 py-0.5 rounded bg-red-100 text-red-800">Vročinski val</span>}
-              {todayWeather.isStorm && <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800">Nevihta</span>}
+              {todayWeather.isDrought && (
+                <span className="px-2 py-0.5 rounded" style={{ backgroundColor: "hsl(var(--weather-drought) / 0.18)", color: "hsl(var(--weather-drought-foreground))" }}>Suša</span>
+              )}
+              {todayWeather.isHeatwave && (
+                <span className="px-2 py-0.5 rounded" style={{ backgroundColor: "hsl(var(--weather-heat) / 0.18)", color: "hsl(var(--weather-heat-foreground))" }}>Vročinski val</span>
+              )}
+              {todayWeather.isStorm && (
+                <span className="px-2 py-0.5 rounded" style={{ backgroundColor: "hsl(var(--weather-storm) / 0.18)", color: "hsl(var(--weather-storm-foreground))" }}>Nevihta</span>
+              )}
             </div>
           </div>
 
           <div className="grid grid-cols-3 gap-2 text-xs">
             <div className="flex items-center gap-1 text-muted-foreground">
-              <Sun className="w-4 h-4 text-amber-500" />
+              <Sun className="w-4 h-4" style={{ color: "hsl(var(--accent))" }} />
               {todayWeather.sunHours} h
             </div>
             <div className="flex items-center gap-1 text-muted-foreground">
-              <CloudRain className="w-4 h-4 text-blue-500" />
+              <CloudRain className="w-4 h-4" style={{ color: "hsl(var(--weather-storm))" }} />
               {todayWeather.rainMm} mm
             </div>
             <div className="flex items-center gap-1 text-muted-foreground">
-              <Thermometer className="w-4 h-4 text-rose-500" />
+              <Thermometer className="w-4 h-4" style={{ color: "hsl(var(--weather-heat))" }} />
               {todayWeather.temperature}°C
             </div>
           </div>
