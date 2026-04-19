@@ -9,6 +9,7 @@ interface YearTimelineProps {
 const stateToColor = (s: TreeState) => {
   switch (s) {
     case "dead": return "hsl(var(--tree-dead))";
+    case "dying": return "hsl(var(--tree-dying))";
     case "weak": return "hsl(var(--tree-weak))";
     case "healthy": return "hsl(var(--tree-healthy))";
     case "thriving": return "hsl(var(--tree-thriving))";
