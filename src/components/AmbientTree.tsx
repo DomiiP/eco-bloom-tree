@@ -1,6 +1,6 @@
 import { useMemo, useRef, useEffect, useState } from "react";
 
-type TreeState = "dead" | "weak" | "healthy" | "thriving";
+type TreeState = "dead" | "dying" | "weak" | "healthy" | "thriving";
 
 interface AmbientTreeProps {
   state: TreeState;
@@ -10,8 +10,9 @@ interface AmbientTreeProps {
 
 const stateConfig = {
   dead: { leaves: 0, trunkColor: "#5a3a2a", leafColor: "#8B4513", bgGlow: "rgba(139,69,19,0.08)", label: "Mrtvo" },
-  weak: { leaves: 8, trunkColor: "#5a3a2a", leafColor: "#c9a84c", bgGlow: "rgba(201,168,76,0.1)", label: "Šibko" },
-  healthy: { leaves: 18, trunkColor: "#5a3a2a", leafColor: "#4a9e5c", bgGlow: "rgba(74,158,92,0.12)", label: "Zdravo" },
+  dying: { leaves: 4, trunkColor: "#5a3a2a", leafColor: "#a86a2a", bgGlow: "rgba(168,106,42,0.09)", label: "Umirajoče" },
+  weak: { leaves: 11, trunkColor: "#5a3a2a", leafColor: "#c9a84c", bgGlow: "rgba(201,168,76,0.1)", label: "Šibko" },
+  healthy: { leaves: 19, trunkColor: "#5a3a2a", leafColor: "#4a9e5c", bgGlow: "rgba(74,158,92,0.12)", label: "Zdravo" },
   thriving: { leaves: 28, trunkColor: "#5a3a2a", leafColor: "#2d7a3e", bgGlow: "rgba(45,122,62,0.15)", label: "Cvetoče" },
 };
 

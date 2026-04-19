@@ -41,6 +41,7 @@ All colors MUST be HSL.
     --fe-blue: 210 85% 35%;
     --fe-blue-foreground: 0 0% 100%;
     --tree-dead: 0 30% 35%;
+    --tree-dying: 18 50% 42%;
     --tree-weak: 38 60% 50%;
     --tree-healthy: 142 50% 40%;
     --tree-thriving: 142 65% 30%;
