@@ -91,6 +91,11 @@ export function calcDailyConsumption(family: FamilyMember[], hd: HouseholdDay) {
   water *= hd.multiplier;
   electricity *= hd.multiplier;
 
+  // Dnevna naključna variacija (pranje, kuhanje, tuširanje) – več dinamike
+  const noise = 0.85 + (Math.sin(hd.day * 2.7) * 0.5 + 0.5) * 0.3;
+  water *= noise;
+  electricity *= (0.88 + (Math.cos(hd.day * 1.9) * 0.5 + 0.5) * 0.24);
+
   // Stand-by poraba pri vacation
   if (hd.type === "vacation") {
     electricity = Math.max(electricity, 1.5);
@@ -100,14 +105,25 @@ export function calcDailyConsumption(family: FamilyMember[], hd: HouseholdDay) {
   return { water: Math.round(water), electricity: Math.round(electricity * 10) / 10 };
 }
 
-// Trajnostni cilji (za 4-člansko družino):
-// Voda < 500 L/dan = odlično, > 800 L = slabo
-// Elektrika < 10 kWh/dan = odlično, > 18 kWh = slabo
+// Trajnostni cilji – razširjen razpon za bolj dinamičen graf
 export function consumptionToScore(family: FamilyMember[], water: number, electricity: number): number {
-  const baseW = family.length * 130; // ciljna poraba
+  const baseW = family.length * 130;
   const baseE = family.length * 2.8;
 
-  const wScore = Math.max(0, 100 - Math.max(0, (water - baseW) / baseW) * 100);
-  const eScore = Math.max(0, 100 - Math.max(0, (electricity - baseE) / baseE) * 100);
-  return Math.round(wScore * 0.45 + eScore * 0.55);
+  const wRatio = water / baseW;
+  const eRatio = electricity / baseE;
+
+  let wScore: number;
+  if (wRatio < 0.5) wScore = 100;
+  else if (wRatio < 0.9) wScore = 100 - (wRatio - 0.5) * 50;
+  else if (wRatio < 1.4) wScore = 80 - (wRatio - 0.9) * 80;
+  else wScore = Math.max(0, 40 - (wRatio - 1.4) * 60);
+
+  let eScore: number;
+  if (eRatio < 0.5) eScore = 100;
+  else if (eRatio < 0.9) eScore = 100 - (eRatio - 0.5) * 50;
+  else if (eRatio < 1.4) eScore = 80 - (eRatio - 0.9) * 80;
+  else eScore = Math.max(0, 40 - (eRatio - 1.4) * 60);
+
+  return Math.round(Math.max(0, Math.min(100, wScore * 0.45 + eScore * 0.55)));
 }

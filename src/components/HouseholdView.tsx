@@ -108,21 +108,25 @@ const HouseholdView = () => {
       ? Math.round(history.reduce((a, b) => a + b.score, 0) / history.length)
       : currentScore;
 
-  // Dogodki za timeline
+  // Dogodki za timeline – max 15, prioriteta po pomembnosti
   const events = useMemo(() => {
-    const result: { day: number; type: "vacation" | "guests" | "weekend" | "holiday"; label?: string }[] = [];
+    const all: { day: number; type: "vacation" | "guests" | "weekend" | "holiday"; label?: string }[] = [];
     let lastVacation = -10;
     for (const hd of householdYear) {
       if (hd.type === "vacation" && hd.day - lastVacation > 5) {
-        result.push({ day: hd.day, type: "vacation", label: "Počitnice" });
+        all.push({ day: hd.day, type: "vacation", label: "Počitnice" });
         lastVacation = hd.day;
-      } else if (hd.type === "guests") {
-        result.push({ day: hd.day, type: "guests", label: `${hd.guestCount} gostov` });
       } else if (hd.type === "holiday") {
-        result.push({ day: hd.day, type: "holiday", label: "Praznik" });
+        all.push({ day: hd.day, type: "holiday", label: "Praznik" });
+      } else if (hd.type === "guests") {
+        all.push({ day: hd.day, type: "guests", label: `${hd.guestCount} gostov` });
       }
     }
-    return result;
+    const priority: Record<string, number> = { vacation: 0, holiday: 1, guests: 2, weekend: 3 };
+    all.sort((a, b) => priority[a.type] - priority[b.type]);
+    const top = all.slice(0, 15);
+    top.sort((a, b) => a.day - b.day);
+    return top;
   }, [householdYear]);
 
   return (
@@ -130,7 +134,7 @@ const HouseholdView = () => {
       {/* Drevo */}
       <div className="lg:col-span-3 flex flex-col items-center gap-4">
         <div className="w-full max-w-lg p-6 rounded-2xl bg-card border border-border shadow-sm">
-          <AmbientTree state={state} score={currentScore} transitionSpeed={3} />
+          <AmbientTree state={state} score={currentScore} transitionSpeed={Math.min(speed, 4)} />
         </div>
         <YearTimeline
           history={history}
