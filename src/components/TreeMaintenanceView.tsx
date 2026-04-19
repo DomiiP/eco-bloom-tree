@@ -209,7 +209,7 @@ const TreeMaintenanceView = () => {
           <div className="space-y-2 pt-2 border-t border-border">
             <div className="flex items-center justify-between text-sm">
               <div className="flex items-center gap-2">
-                <Zap className="w-4 h-4 text-amber-500" />
+                <Zap className="w-4 h-4" style={{ color: "hsl(var(--accent))" }} />
                 <span className="font-body font-medium">Dodatna svetloba</span>
               </div>
               <span className="text-xs text-muted-foreground">
