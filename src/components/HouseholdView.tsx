@@ -264,6 +264,8 @@ const HouseholdView = () => {
             Drevo raste glede na trajnostno porabo družine. Počitnice → poraba pade, gostje in prazniki → poraba naraste.
           </p>
         </div>
+
+        <TimelineLegend variant="household" />
       </div>
     </div>
   );
