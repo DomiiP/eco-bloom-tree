@@ -1,43 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Droplets, Zap, Sun, CloudRain, Thermometer, Plus, TrendingUp, TrendingDown, AlertCircle } from "lucide-react";
+import { Droplets, Zap, Sun, CloudRain, Thermometer, Plus, AlertCircle } from "lucide-react";
 import AmbientTree from "@/components/AmbientTree";
 import SimulationControls from "@/components/SimulationControls";
 import YearTimeline from "@/components/YearTimeline";
+import TimelineLegend from "@/components/TimelineLegend";
+import TreeStatusBanner, { StatusInfo, StatusKind } from "@/components/TreeStatusBanner";
 import { Button } from "@/components/ui/button";
 import { generateYearWeather, DayWeather } from "@/lib/weather";
 import { TreeState, getTreeState, dayToDate, stateIndex } from "@/lib/treeUtils";
 
-// Tedenske potrebe (7-dnevni cikel)
-function weeklyWaterNeed(weather: DayWeather[]): number {
-  // Povprečna dnevna potreba * 7
-  let sum = 0;
-  for (const w of weather) {
-    if (w.temperature > 25) sum += 35;
-    else if (w.temperature > 18) sum += 22;
-    else if (w.temperature > 10) sum += 12;
-    else if (w.temperature > 2) sum += 6;
-    else sum += 3;
-  }
-  return sum;
+// === Daily needs (L water, "light hours") ===
+function dailyWaterNeed(w: DayWeather): number {
+  if (w.temperature > 25) return 35;
+  if (w.temperature > 18) return 22;
+  if (w.temperature > 10) return 12;
+  if (w.temperature > 2) return 6;
+  return 3;
 }
-function weeklyLightNeed(weather: DayWeather[]): number {
-  let sum = 0;
-  for (const w of weather) sum += w.temperature < 2 ? 4 : 7;
-  return sum;
+function dailyLightNeed(w: DayWeather): number {
+  return w.temperature < 2 ? 4 : 7;
 }
 
 interface DayLog {
   day: number;
   score: number;
   state: TreeState;
-}
-
-type FeedbackKind = "improved" | "degraded" | null;
-interface Feedback {
-  kind: FeedbackKind;
-  reason?: "water" | "light" | "both";
-  fromState: TreeState;
-  toState: TreeState;
 }
 
 const stateLabels: Record<TreeState, string> = {
@@ -48,6 +35,82 @@ const stateLabels: Record<TreeState, string> = {
   thriving: "Cvetoče",
 };
 
+// === Status helpers (continuous, every day) ===
+// Ratio thresholds:
+//   < 0.6 critical low, 0.6-0.85 low, 0.85-1.25 ok, 1.25-1.6 high, > 1.6 critical high
+function classifyRatio(r: number): "low" | "ok" | "high" | "critHigh" {
+  if (r < 0.85) return "low";
+  if (r > 1.6) return "critHigh";
+  if (r > 1.25) return "high";
+  return "ok";
+}
+
+function buildStatus(waterRatio: number, lightRatio: number): StatusInfo {
+  const w = classifyRatio(waterRatio);
+  const l = classifyRatio(lightRatio);
+
+  // Excess (overdose)
+  if (w === "critHigh" && l === "critHigh") {
+    return {
+      kind: "excess-both",
+      title: "Drevo je preobremenjeno",
+      description: "Prevelika količina vode in svetlobe škoduje koreninam in listom. Počakaj, da se zaloge porabijo.",
+    };
+  }
+  if (w === "critHigh") {
+    return {
+      kind: "excess-water",
+      title: "Preveč vode",
+      description: "Korenine se dušijo zaradi zalivanja čez mejo. Naslednje dni ne dodajaj vode.",
+    };
+  }
+  if (l === "critHigh") {
+    return {
+      kind: "excess-light",
+      title: "Preveč svetlobe",
+      description: "Listi so izpostavljeni preveliki količini svetlobe. Zmanjšaj dodajanje za nekaj dni.",
+    };
+  }
+
+  // Deficits
+  if (w === "low" && l === "low") {
+    return {
+      kind: "low-both",
+      title: "Drevo potrebuje vodo in svetlobo",
+      description: "Trenutne zaloge ne pokrivajo potreb. Dodaj oboje, da prepreciš poslabšanje.",
+    };
+  }
+  if (w === "low") {
+    return {
+      kind: "low-water",
+      title: "Drevo potrebuje vodo",
+      description: "Naravne padavine ne zadoščajo. Dodaj vodo, da ohraniš stanje.",
+    };
+  }
+  if (l === "low") {
+    return {
+      kind: "low-light",
+      title: "Drevo potrebuje svetlobo",
+      description: "Naravna svetloba je premajhna. Dodaj umetno svetlobo za rast.",
+    };
+  }
+
+  return {
+    kind: "ok",
+    title: "Drevo ima ustrezne pogoje",
+    description: "Zaloge vode in svetlobe so v ravnovesju. Drevo lahko mirno raste.",
+  };
+}
+
+// === Reservoir model ===
+// Water reserve (L) drains per day according to need; natural rain & user adds top it up.
+// Excess in reserve causes short stress, but sustains health for many days afterwards.
+const WATER_RESERVE_CAP = 800; // total bucket
+const LIGHT_RESERVE_CAP = 80; // accumulated light hours
+// "Acute" overdose threshold: too much added in a single week relative to weekly need
+const ACUTE_WATER_FACTOR = 2.5; // pending water > 2.5× weekly need = acute stress
+const ACUTE_LIGHT_FACTOR = 2.5;
+
 const TreeMaintenanceView = () => {
   const weather = useMemo(() => generateYearWeather(), []);
   const [day, setDay] = useState(0);
@@ -57,23 +120,32 @@ const TreeMaintenanceView = () => {
   const [waterToAdd, setWaterToAdd] = useState(0);
   const [lightToAdd, setLightToAdd] = useState(0);
   const [history, setHistory] = useState<DayLog[]>([]);
-  const [feedback, setFeedback] = useState<Feedback | null>(null);
-  const [pendingWater, setPendingWater] = useState<number | null>(null);
-  const [pendingLight, setPendingLight] = useState<number | null>(null);
+  const [recentChange, setRecentChange] = useState<{ direction: "up" | "down"; from: string; to: string } | null>(null);
+  const [pendingWater, setPendingWater] = useState(0);
+  const [pendingLight, setPendingLight] = useState(0);
+  const [waterReserve, setWaterReserve] = useState(120); // start with small buffer
+  const [lightReserve, setLightReserve] = useState(20);
   const [lastChangeDay, setLastChangeDay] = useState(-7);
 
   const dayRef = useRef(0);
   const scoreRef = useRef(70);
   const lastChangeRef = useRef(-7);
-  const pausedForFeedbackRef = useRef(false);
+  const waterReserveRef = useRef(120);
+  const lightReserveRef = useRef(20);
+  const pendingWaterRef = useRef(0);
+  const pendingLightRef = useRef(0);
 
   dayRef.current = day;
   scoreRef.current = score;
   lastChangeRef.current = lastChangeDay;
+  waterReserveRef.current = waterReserve;
+  lightReserveRef.current = lightReserve;
+  pendingWaterRef.current = pendingWater;
+  pendingLightRef.current = pendingLight;
 
   const state = getTreeState(score);
 
-  // Glavna zanka: vsak "tick" = 1 dan
+  // Main daily tick
   useEffect(() => {
     if (!isPlaying) return;
     const interval = setInterval(() => {
@@ -83,120 +155,165 @@ const TreeMaintenanceView = () => {
         return;
       }
 
-      // Vsak 7. dan ocenimo teden in morda spremenimo stopnjo
-      const isEvalDay = (d + 1) % 7 === 0;
+      const today = weather[d];
 
-      if (!isEvalDay) {
-        // Dan brez evaluacije – samo posnamemo trenutno stanje in gremo naprej
-        setHistory((h) => [...h, { day: d, score: scoreRef.current, state: getTreeState(scoreRef.current) }]);
-        setDay(d + 1);
-        return;
-      }
+      // Apply pending additions on the first day of each evaluation week
+      const isWeekStart = d % 7 === 0;
+      let newWaterReserve = waterReserveRef.current;
+      let newLightReserve = lightReserveRef.current;
+      let acuteStress = 0;
 
-      // Cooldown: zadnja sprememba mora biti vsaj 7 dni nazaj
-      if (d - lastChangeRef.current < 7) {
-        setHistory((h) => [...h, { day: d, score: scoreRef.current, state: getTreeState(scoreRef.current) }]);
-        setDay(d + 1);
-        return;
-      }
+      if (isWeekStart && (pendingWaterRef.current > 0 || pendingLightRef.current > 0)) {
+        // Compute weekly needs to detect overdose
+        const upcoming = weather.slice(d, Math.min(d + 7, 365));
+        const weekWaterNeed = upcoming.reduce((s, w) => s + dailyWaterNeed(w), 0);
+        const weekLightNeed = upcoming.reduce((s, w) => s + dailyLightNeed(w), 0);
 
-      // Ovrednoti zadnji teden
-      const weekWeather = weather.slice(Math.max(0, d - 6), d + 1);
-      const wNeed = weeklyWaterNeed(weekWeather);
-      const lNeed = weeklyLightNeed(weekWeather);
-      const naturalW = weekWeather.reduce((s, w) => s + w.rainMm * 1.5, 0);
-      const naturalL = weekWeather.reduce((s, w) => s + w.sunHours, 0);
-      const addedW = pendingWater ?? 0;
-      const addedL = (pendingLight ?? 0) * 0.4 * 7; // dodaj × ekv. ur svetlobe za teden
-
-      const wRatio = (naturalW + addedW) / wNeed;
-      const lRatio = (naturalL + addedL) / lNeed;
-
-      // Določi spremembo: bolje +1, slabše -1, povprečno = +/- delna
-      const wOk = wRatio >= 0.8 && wRatio <= 1.4;
-      const lOk = lRatio >= 0.8 && lRatio <= 1.4;
-      const wBad = wRatio < 0.6 || wRatio > 1.6;
-      const lBad = lRatio < 0.6 || lRatio > 1.6;
-
-      const curState = getTreeState(scoreRef.current);
-      const curIdx = stateIndex(curState);
-      let newScore = scoreRef.current;
-      let fb: Feedback | null = null;
-
-      if (wOk && lOk && curIdx < 4) {
-        // Boljša stopnja
-        newScore = Math.min(100, scoreRef.current + 18);
-        const nextState = getTreeState(newScore);
-        if (stateIndex(nextState) > curIdx) {
-          fb = { kind: "improved", fromState: curState, toState: nextState };
+        if (pendingWaterRef.current > weekWaterNeed * ACUTE_WATER_FACTOR) {
+          acuteStress += 8;
         }
-      } else if (wBad || lBad) {
-        // Slabša stopnja – ustavi in vprašaj
-        newScore = Math.max(0, scoreRef.current - 22);
-        const nextState = getTreeState(newScore);
-        if (stateIndex(nextState) < curIdx) {
-          const reason: "water" | "light" | "both" =
-            wBad && lBad ? "both" : wBad ? "water" : "light";
-          fb = { kind: "degraded", reason, fromState: curState, toState: nextState };
+        if (pendingLightRef.current > weekLightNeed * ACUTE_LIGHT_FACTOR) {
+          acuteStress += 6;
+        }
+
+        newWaterReserve = Math.min(WATER_RESERVE_CAP, newWaterReserve + pendingWaterRef.current);
+        newLightReserve = Math.min(LIGHT_RESERVE_CAP, newLightReserve + pendingLightRef.current * 0.4 * 7);
+        pendingWaterRef.current = 0;
+        pendingLightRef.current = 0;
+        setPendingWater(0);
+        setPendingLight(0);
+      }
+
+      // Natural input
+      newWaterReserve += today.rainMm * 1.5;
+      newLightReserve += today.sunHours;
+
+      // Drain by daily need
+      const wNeed = dailyWaterNeed(today);
+      const lNeed = dailyLightNeed(today);
+      newWaterReserve = Math.max(0, newWaterReserve - wNeed);
+      newLightReserve = Math.max(0, newLightReserve - lNeed);
+
+      // Cap (excess simply spills, but already counted in acute stress)
+      newWaterReserve = Math.min(WATER_RESERVE_CAP, newWaterReserve);
+      newLightReserve = Math.min(LIGHT_RESERVE_CAP, newLightReserve);
+
+      // Daily score drift based on reserve coverage (forward 3 days look)
+      const lookahead = weather.slice(d, Math.min(d + 3, 365));
+      const wNeedAhead = lookahead.reduce((s, w) => s + dailyWaterNeed(w), 0);
+      const lNeedAhead = lookahead.reduce((s, w) => s + dailyLightNeed(w), 0);
+      const wRatio = newWaterReserve / Math.max(1, wNeedAhead);
+      const lRatio = newLightReserve / Math.max(1, lNeedAhead);
+
+      let dailyDrift = 0;
+      // Reward balanced reserves
+      if (wRatio >= 0.85 && wRatio <= 1.4 && lRatio >= 0.85 && lRatio <= 1.4) dailyDrift += 1.2;
+      else if (wRatio >= 0.6 && lRatio >= 0.6 && wRatio <= 1.6 && lRatio <= 1.6) dailyDrift += 0.2;
+      // Penalize deficits
+      if (wRatio < 0.6) dailyDrift -= 1.5;
+      if (lRatio < 0.6) dailyDrift -= 1.2;
+      // Penalize sustained excess (less harsh than acute)
+      if (wRatio > 1.8) dailyDrift -= 0.6;
+      if (lRatio > 1.8) dailyDrift -= 0.5;
+
+      // Weather penalties
+      if (today.isDrought) dailyDrift -= 0.6;
+      if (today.isHeatwave) dailyDrift -= 0.4;
+
+      let newScore = Math.max(0, Math.min(100, scoreRef.current + dailyDrift - acuteStress));
+
+      // Stage change every 7 days, with 7-day cooldown
+      const isEvalDay = (d + 1) % 7 === 0;
+      let changedDirection: "up" | "down" | null = null;
+      let fromState: TreeState = getTreeState(scoreRef.current);
+      let toState: TreeState = getTreeState(newScore);
+
+      if (isEvalDay && d - lastChangeRef.current >= 7) {
+        const curIdx = stateIndex(fromState);
+        const newIdx = stateIndex(toState);
+        if (newIdx > curIdx) {
+          // Only allow +1 stage at a time
+          const targetScore = thresholdForStage(curIdx + 1);
+          newScore = Math.max(newScore, targetScore);
+          toState = getTreeState(newScore);
+          changedDirection = "up";
+          lastChangeRef.current = d;
+          setLastChangeDay(d);
+        } else if (newIdx < curIdx) {
+          const targetScore = thresholdForStage(curIdx) - 1;
+          newScore = Math.min(newScore, targetScore);
+          toState = getTreeState(newScore);
+          changedDirection = "down";
+          lastChangeRef.current = d;
+          setLastChangeDay(d);
         }
       } else {
-        // Povprečno – majhen drift
-        const drift = (wRatio + lRatio) / 2 < 0.9 ? -4 : 2;
-        newScore = Math.max(0, Math.min(100, scoreRef.current + drift));
+        // Outside eval window: clamp to current stage so we don't skip
+        if (toState !== fromState) {
+          const curIdx = stateIndex(fromState);
+          const minScore = thresholdForStage(curIdx);
+          const maxScore = thresholdForStage(curIdx + 1) - 1;
+          newScore = Math.max(minScore, Math.min(maxScore, newScore));
+          toState = fromState;
+        }
       }
 
-      // Posebni dogodki teden
-      if (weekWeather.some((w) => w.isDrought)) newScore -= 3;
-      if (weekWeather.some((w) => w.isHeatwave)) newScore -= 2;
-      newScore = Math.max(0, Math.min(100, newScore));
-
-      const finalState = getTreeState(newScore);
       setScore(newScore);
-      setHistory((h) => [...h, { day: d, score: newScore, state: finalState }]);
-      setPendingWater(null);
-      setPendingLight(null);
-      setWaterToAdd(0);
-      setLightToAdd(0);
+      setWaterReserve(newWaterReserve);
+      setLightReserve(newLightReserve);
+      setHistory((h) => [...h, { day: d, score: newScore, state: toState }]);
       setDay(d + 1);
-      setLastChangeDay(d);
 
-      if (fb) {
-        setFeedback(fb);
-        if (fb.kind === "degraded") {
-          // Ustavi simulacijo
-          pausedForFeedbackRef.current = true;
+      if (changedDirection) {
+        setRecentChange({
+          direction: changedDirection,
+          from: stateLabels[fromState],
+          to: stateLabels[toState],
+        });
+        if (changedDirection === "down") {
           setIsPlaying(false);
         }
       }
     }, 1000 / speed);
     return () => clearInterval(interval);
-  }, [isPlaying, speed, weather, pendingWater, pendingLight]);
+  }, [isPlaying, speed, weather]);
 
   const reset = () => {
     setIsPlaying(false);
     setDay(0);
     setScore(70);
     setHistory([]);
-    setPendingWater(null);
-    setPendingLight(null);
+    setPendingWater(0);
+    setPendingLight(0);
     setWaterToAdd(0);
     setLightToAdd(0);
-    setFeedback(null);
+    setRecentChange(null);
     setLastChangeDay(-7);
+    setWaterReserve(120);
+    setLightReserve(20);
   };
 
   const handleAdd = () => {
-    setPendingWater(waterToAdd);
-    setPendingLight(lightToAdd);
-    setFeedback(null);
+    setPendingWater((p) => p + waterToAdd);
+    setPendingLight((p) => p + lightToAdd);
+    setWaterToAdd(0);
+    setLightToAdd(0);
   };
-
-  const dismissFeedback = () => setFeedback(null);
 
   const todayWeather = weather[Math.min(day, 364)];
   const date = dayToDate(Math.min(day, 364));
 
-  // Dogodki za timeline (omejimo na max 15)
+  // Continuous status (uses reserves vs upcoming 3-day need + acute pending check)
+  const status: StatusInfo = useMemo(() => {
+    const lookahead = weather.slice(day, Math.min(day + 3, 365));
+    const wNeedAhead = lookahead.reduce((s, w) => s + dailyWaterNeed(w), 0) || 1;
+    const lNeedAhead = lookahead.reduce((s, w) => s + dailyLightNeed(w), 0) || 1;
+    const wRatio = (waterReserve + pendingWater) / wNeedAhead;
+    const lRatio = (lightReserve + pendingLight * 0.4 * 7) / lNeedAhead;
+    return buildStatus(wRatio, lRatio);
+  }, [day, waterReserve, lightReserve, pendingWater, pendingLight, weather]);
+
+  // Events for timeline (max 15)
   const events = useMemo(() => {
     const all = weather
       .map((w) => {
@@ -206,62 +323,37 @@ const TreeMaintenanceView = () => {
         return null;
       })
       .filter((e): e is NonNullable<typeof e> => e !== null);
-    // Vzorči največ 15 enakomerno
     if (all.length <= 15) return all;
     const step = all.length / 15;
     return Array.from({ length: 15 }, (_, i) => all[Math.floor(i * step)]);
   }, [weather]);
 
-  // Tedenski povzetek za prikaz potreb
-  const weekStart = Math.max(0, day - 6);
-  const weekWeather = weather.slice(weekStart, day + 1);
-  const wNeedWeek = weeklyWaterNeed(weekWeather);
-  const lNeedWeek = weeklyLightNeed(weekWeather);
-  const naturalWaterWeek = weekWeather.reduce((s, w) => s + w.rainMm * 1.5, 0);
-  const naturalLightWeek = weekWeather.reduce((s, w) => s + w.sunHours, 0);
+  // Friendly reserve coverage for next ~3 days
+  const lookahead = weather.slice(day, Math.min(day + 3, 365));
+  const wNeed3 = lookahead.reduce((s, w) => s + dailyWaterNeed(w), 0);
+  const lNeed3 = lookahead.reduce((s, w) => s + dailyLightNeed(w), 0);
+  const waterCoverPct = Math.min(200, Math.round(((waterReserve + pendingWater) / Math.max(1, wNeed3)) * 100));
+  const lightCoverPct = Math.min(200, Math.round(((lightReserve + pendingLight * 0.4 * 7) / Math.max(1, lNeed3)) * 100));
+
+  const coverColor = (pct: number) => {
+    if (pct < 60) return "hsl(var(--destructive))";
+    if (pct < 85) return "hsl(var(--weather-heat))";
+    if (pct <= 140) return "hsl(var(--tree-thriving))";
+    if (pct <= 180) return "hsl(var(--weather-heat))";
+    return "hsl(var(--destructive))";
+  };
 
   return (
     <div className="grid lg:grid-cols-5 gap-6 items-start">
-      {/* Drevo */}
+      {/* Tree column */}
       <div className="lg:col-span-3 flex flex-col items-center gap-4">
-        <div className="w-full max-w-lg p-6 rounded-2xl bg-card border border-border shadow-sm relative">
+        <div className="w-full max-w-lg p-6 rounded-2xl bg-card border border-border shadow-sm">
           <AmbientTree state={state} score={score} transitionSpeed={speed} />
-
-          {/* Feedback overlay */}
-          {feedback && (
-            <div className={`absolute top-3 left-3 right-3 p-3 rounded-lg border text-sm font-body animate-fade-in ${
-              feedback.kind === "improved"
-                ? "bg-primary/10 border-primary/40 text-primary"
-                : "bg-destructive/10 border-destructive/40 text-destructive"
-            }`}>
-              <div className="flex items-start gap-2">
-                {feedback.kind === "improved" ? (
-                  <TrendingUp className="w-4 h-4 mt-0.5 shrink-0" />
-                ) : (
-                  <TrendingDown className="w-4 h-4 mt-0.5 shrink-0" />
-                )}
-                <div className="flex-1">
-                  {feedback.kind === "improved" ? (
-                    <p>Drevo se je izboljšalo: <strong>{stateLabels[feedback.fromState]} → {stateLabels[feedback.toState]}</strong></p>
-                  ) : (
-                    <>
-                      <p className="mb-1"><strong>{stateLabels[feedback.fromState]} → {stateLabels[feedback.toState]}</strong></p>
-                      <p className="text-xs opacity-90">
-                        Vzrok: {feedback.reason === "water" ? "premalo/preveč vode" : feedback.reason === "light" ? "premalo/preveč svetlobe" : "voda in svetloba"}.
-                        Dodaj potrebne vire in nadaljuj.
-                      </p>
-                    </>
-                  )}
-                </div>
-                <button onClick={dismissFeedback} className="text-xs opacity-60 hover:opacity-100">×</button>
-              </div>
-            </div>
-          )}
         </div>
         <YearTimeline history={history} events={events} currentDay={day} />
       </div>
 
-      {/* Kontrole */}
+      {/* Controls column */}
       <div className="lg:col-span-2 space-y-4">
         <SimulationControls
           isPlaying={isPlaying}
@@ -271,7 +363,14 @@ const TreeMaintenanceView = () => {
           onSpeedChange={setSpeed}
         />
 
-        {/* Današnje vreme & teden */}
+        {/* Persistent status banner */}
+        <TreeStatusBanner
+          status={status}
+          recentChange={recentChange}
+          onDismissChange={() => setRecentChange(null)}
+        />
+
+        {/* Today + needs panel */}
         <div className="p-4 rounded-xl bg-card border border-border space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="font-display text-base text-foreground">
@@ -305,20 +404,41 @@ const TreeMaintenanceView = () => {
             </div>
           </div>
 
-          {/* Tedenski povzetek */}
-          <div className="pt-2 border-t border-border space-y-2">
-            <p className="text-[11px] text-muted-foreground font-body uppercase tracking-wide">Zadnji teden – potrebe drevesa</p>
+          {/* Friendly reserve view */}
+          <div className="pt-2 border-t border-border space-y-3">
+            <p className="text-[11px] text-muted-foreground font-body uppercase tracking-wide">
+              Zaloge drevesa (pokritost potreb naslednjih 3 dni)
+            </p>
 
-            {/* Voda */}
+            {/* Water reserve */}
+            <ReserveBar
+              icon={<Droplets className="w-4 h-4" style={{ color: "hsl(var(--weather-storm))" }} />}
+              label="Voda"
+              pct={waterCoverPct}
+              color={coverColor(waterCoverPct)}
+              detail={`${Math.round(waterReserve)} L v zalogi`}
+            />
+
+            {/* Light reserve */}
+            <ReserveBar
+              icon={<Zap className="w-4 h-4" style={{ color: "hsl(var(--accent))" }} />}
+              label="Svetloba"
+              pct={lightCoverPct}
+              color={coverColor(lightCoverPct)}
+              detail={`${Math.round(lightReserve)} h v zalogi`}
+            />
+          </div>
+
+          {/* Add controls */}
+          <div className="pt-2 border-t border-border space-y-3">
+            <p className="text-[11px] text-muted-foreground font-body uppercase tracking-wide">
+              Dodaj za naslednji teden
+            </p>
+
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-sm">
-                <div className="flex items-center gap-2">
-                  <Droplets className="w-4 h-4" style={{ color: "hsl(var(--weather-storm))" }} />
-                  <span className="font-body font-medium">Voda</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  Narava: {naturalWaterWeek.toFixed(0)} L / Potreba: {wNeedWeek} L
-                </span>
+              <div className="flex items-center gap-2 text-sm">
+                <Droplets className="w-4 h-4" style={{ color: "hsl(var(--weather-storm))" }} />
+                <span className="font-body font-medium">Voda</span>
               </div>
               <div className="flex gap-1">
                 {[0, 20, 50, 100, 200].map((amt) => (
@@ -335,16 +455,10 @@ const TreeMaintenanceView = () => {
               </div>
             </div>
 
-            {/* Svetloba */}
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-sm">
-                <div className="flex items-center gap-2">
-                  <Zap className="w-4 h-4" style={{ color: "hsl(var(--accent))" }} />
-                  <span className="font-body font-medium">Dodatna svetloba</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  Sonce: {naturalLightWeek.toFixed(0)} h / Potreba: {lNeedWeek} h
-                </span>
+              <div className="flex items-center gap-2 text-sm">
+                <Zap className="w-4 h-4" style={{ color: "hsl(var(--accent))" }} />
+                <span className="font-body font-medium">Dodatna svetloba</span>
               </div>
               <div className="flex gap-1">
                 {[0, 1, 3, 6, 10].map((amt) => (
@@ -364,25 +478,70 @@ const TreeMaintenanceView = () => {
             <Button
               onClick={handleAdd}
               disabled={waterToAdd === 0 && lightToAdd === 0}
-              className="w-full mt-2"
+              className="w-full"
               size="sm"
             >
               <Plus className="w-4 h-4" />
-              Dodaj za naslednji teden
+              Dodaj
             </Button>
-            {(pendingWater !== null || pendingLight !== null) && (
+            {(pendingWater > 0 || pendingLight > 0) && (
               <p className="text-[11px] text-primary font-body text-center">
-                Pripravljeno: +{pendingWater ?? 0}L vode, +{pendingLight ?? 0} svetlobe
+                Pripravljeno za naslednji teden: +{pendingWater}L vode, +{pendingLight} svetlobe
               </p>
             )}
           </div>
 
           <p className="text-[11px] text-muted-foreground font-body pt-2 border-t border-border leading-relaxed flex items-start gap-1.5">
             <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />
-            Drevo se ocenjuje vsak teden. Stopnja se lahko spremeni največ enkrat na 7 dni. Ko se drevo poslabša, se simulacija ustavi.
+            Drevo se ocenjuje vsak teden. Stopnja se lahko spremeni največ enkrat na 7 dni. Velike količine vode/svetlobe povzročijo kratkotrajni stres, a dolgo zalogo.
           </p>
         </div>
+
+        <TimelineLegend variant="weather" />
       </div>
+    </div>
+  );
+};
+
+// Stage thresholds matching getTreeState: 15/35/55/78/100
+function thresholdForStage(idx: number): number {
+  // idx 0 dead -> [0,15], 1 dying -> [16,35], 2 weak -> [36,55], 3 healthy -> [56,78], 4 thriving -> [79,100]
+  const lower = [0, 16, 36, 56, 79, 101];
+  return lower[Math.max(0, Math.min(5, idx))];
+}
+
+interface ReserveBarProps {
+  icon: React.ReactNode;
+  label: string;
+  pct: number;
+  color: string;
+  detail: string;
+}
+
+const ReserveBar = ({ icon, label, pct, color, detail }: ReserveBarProps) => {
+  const status =
+    pct < 60 ? "Premalo" : pct < 85 ? "Skoraj dovolj" : pct <= 140 ? "Ravnovesje" : pct <= 180 ? "Veliko" : "Preveč";
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-sm">
+        <div className="flex items-center gap-2">
+          {icon}
+          <span className="font-body font-medium">{label}</span>
+        </div>
+        <span className="text-xs font-body" style={{ color }}>{status} · {pct}%</span>
+      </div>
+      <div className="relative h-2 w-full bg-secondary rounded-full overflow-hidden">
+        {/* Optimal band 85-140% as background hint */}
+        <div
+          className="absolute top-0 bottom-0 bg-primary/10"
+          style={{ left: "42.5%", width: "27.5%" }}
+        />
+        <div
+          className="absolute top-0 bottom-0 left-0 transition-all duration-500"
+          style={{ width: `${Math.min(100, pct / 2)}%`, backgroundColor: color }}
+        />
+      </div>
+      <p className="text-[11px] text-muted-foreground font-body">{detail}</p>
     </div>
   );
 };

@@ -91,10 +91,12 @@ export function calcDailyConsumption(family: FamilyMember[], hd: HouseholdDay) {
   water *= hd.multiplier;
   electricity *= hd.multiplier;
 
-  // Dnevna naključna variacija (pranje, kuhanje, tuširanje) – več dinamike
-  const noise = 0.85 + (Math.sin(hd.day * 2.7) * 0.5 + 0.5) * 0.3;
-  water *= noise;
-  electricity *= (0.88 + (Math.cos(hd.day * 1.9) * 0.5 + 0.5) * 0.24);
+  // Daily noise + seasonal drift so the year shows real variation, not a repeating pattern
+  const seasonal = 0.92 + Math.sin((hd.day / 365) * Math.PI * 2) * 0.18;
+  const fast = 0.78 + (Math.sin(hd.day * 2.7) * 0.5 + 0.5) * 0.45;
+  const slow = 0.85 + (Math.sin(hd.day * 0.31 + 1.1) * 0.5 + 0.5) * 0.3;
+  water *= fast * seasonal;
+  electricity *= slow * (2 - seasonal); // winter heating bumps electricity up
 
   // Stand-by poraba pri vacation
   if (hd.type === "vacation") {
