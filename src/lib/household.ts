@@ -53,7 +53,7 @@ export function generateYearHousehold(seed = 7, familySize = 4): HouseholdDay[] 
     const guestCount = hasGuests ? Math.ceil(guestRand * 4) + 1 : 0;
 
     let type: DayEventType = "normal";
-    let multiplier = 0.85; // čez teden manj doma (služba/šola)
+    let multiplier = 0.78; // delovni dan – člani na delu/v šoli
     let presentMembers = familySize;
 
     if (isVacation) {
@@ -62,13 +62,13 @@ export function generateYearHousehold(seed = 7, familySize = 4): HouseholdDay[] 
       presentMembers = 0;
     } else if (isHoliday) {
       type = "holiday";
-      multiplier = 1.25;
+      multiplier = 1.35;
     } else if (hasGuests) {
       type = "guests";
-      multiplier = 1.4;
+      multiplier = isWeekend ? 1.6 : 1.45;
     } else if (isWeekend) {
       type = "weekend";
-      multiplier = 1.15;
+      multiplier = 1.3; // čez vikende vsi doma → znatno več porabe
     }
 
     days.push({ day, type, presentMembers, guestCount, multiplier });
