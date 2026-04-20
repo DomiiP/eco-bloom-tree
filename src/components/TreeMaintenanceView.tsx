@@ -370,6 +370,39 @@ const TreeMaintenanceView = () => {
   const waterCoverPct = Math.min(200, Math.round((totalWaterReserve / Math.max(1, wNeed3)) * 100));
   const lightCoverPct = Math.min(200, Math.round((totalLightReserve / Math.max(1, lNeed3)) * 100));
 
+  // Dynamic add-options based on what tree actually needs for the upcoming 7 days,
+  // minus what we already have. So smallest = a small top-up, 3rd/4th = ideal,
+  // largest = clearly too much (overdose).
+  const upcoming7 = weather.slice(day, Math.min(day + 7, 365));
+  const week7Water = upcoming7.reduce((s, w) => s + dailyWaterNeed(w), 0);
+  const week7Light = upcoming7.reduce((s, w) => s + dailyLightNeed(w), 0);
+  const waterDeficit = Math.max(0, week7Water - (naturalWater + userWater));
+  // Round helpers: snap to friendly numbers (5 / 10)
+  const snap = (n: number, step: number) => Math.max(step, Math.round(n / step) * step);
+  // Ideal = cover the deficit; small = ~25%; large = ~280% (overdose)
+  const idealW = snap(Math.max(20, waterDeficit), 10);
+  const waterOptions = [
+    0,
+    snap(idealW * 0.25, 5),
+    snap(idealW * 0.6, 10),
+    idealW,
+    snap(idealW * 2.8, 10),
+  ];
+  // Light: user adds "intensity / day", spread over 7 days. So ideal intensity covers deficit/7.
+  const lightDeficit = Math.max(0, week7Light - (naturalLight + userLight));
+  const idealL = Math.max(1, Math.round(lightDeficit / 7));
+  const lightOptions = [
+    0,
+    Math.max(1, Math.round(idealL * 0.3)),
+    Math.max(2, Math.round(idealL * 0.7)),
+    idealL,
+    Math.max(idealL + 2, Math.round(idealL * 2.8)),
+  ];
+  // Deduplicate consecutive equal numbers (can happen at very small deficits)
+  const dedupe = (arr: number[]) => arr.filter((v, i) => i === 0 || v !== arr[i - 1]);
+  const waterChoices = dedupe(waterOptions);
+  const lightChoices = dedupe(lightOptions);
+
   const coverColor = (pct: number) => {
     if (pct < 60) return "hsl(var(--destructive))";
     if (pct < 85) return "hsl(var(--weather-heat))";
@@ -476,7 +509,7 @@ const TreeMaintenanceView = () => {
                 <span className="font-body font-medium">Voda</span>
               </div>
               <div className="flex gap-1">
-                {[0, 20, 50, 100, 200].map((amt) => (
+                {waterChoices.map((amt) => (
                   <Button
                     key={amt}
                     size="sm"
@@ -496,7 +529,7 @@ const TreeMaintenanceView = () => {
                 <span className="font-body font-medium">Dodatna svetloba</span>
               </div>
               <div className="flex gap-1">
-                {[0, 1, 3, 6, 10].map((amt) => (
+                {lightChoices.map((amt) => (
                   <Button
                     key={amt}
                     size="sm"
