@@ -54,8 +54,12 @@ interface FallingLeaf {
 
 const AmbientTree = ({ state, score, transitionSpeed }: AmbientTreeProps) => {
   const config = stateConfig[state];
-  const baseDuration = Math.max(0.5, 6 - (transitionSpeed - 1) * 1.375);
+  // Color/opacity transitions stay smooth (independent of sim speed)
+  const baseDuration = 1.5;
   const durationMs = baseDuration * 1000;
+  // Falling leaf animation must scale inversely with simulation speed,
+  // so leaves visibly fall even at high speeds (1x = full duration, 14x = ~14× faster)
+  const speedFactor = Math.max(1, transitionSpeed);
   const prevVisibleRef = useRef<number>(config.leaves);
   const [fallingLeaves, setFallingLeaves] = useState<FallingLeaf[]>([]);
   const fallingIdRef = useRef(0);
@@ -89,15 +93,16 @@ const AmbientTree = ({ state, score, transitionSpeed }: AmbientTreeProps) => {
         });
       }
       setFallingLeaves((f) => [...f, ...newFalling]);
-      // Remove after animation
+      const fallMs = (Math.max(1.2, 4 / speedFactor)) * 1000;
       setTimeout(() => {
         setFallingLeaves((f) => f.filter((fl) => !newFalling.find((n) => n.id === fl.id)));
-      }, durationMs + 500);
+      }, fallMs + 300);
     }
     prevVisibleRef.current = visibleCount;
-  }, [visibleCount, leaves, config.leafColor, durationMs]);
+  }, [visibleCount, leaves, config.leafColor, speedFactor]);
 
-  const fallDuration = Math.max(1, baseDuration * 1.5);
+  // Falling animation duration scales with sim speed
+  const fallDuration = Math.max(1.2, 4 / speedFactor);
 
   return (
     <div className="relative flex flex-col items-center">
