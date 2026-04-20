@@ -3,6 +3,7 @@ import { Droplets, Zap, Plus, Minus, Users } from "lucide-react";
 import AmbientTree from "@/components/AmbientTree";
 import SimulationControls from "@/components/SimulationControls";
 import YearTimeline from "@/components/YearTimeline";
+import TimelineLegend from "@/components/TimelineLegend";
 import { Button } from "@/components/ui/button";
 import {
   FamilyMember,
@@ -52,6 +53,11 @@ const HouseholdView = () => {
   const dayRef = useRef(0);
   dayRef.current = day;
 
+  // Smooth the score across the past N days so the curve has clearer trends
+  // (raw daily score is too jittery and looks "flat / same shape" everywhere).
+  const SMOOTH_WINDOW = 7;
+  const smoothedRef = useRef<number[]>([]);
+
   useEffect(() => {
     if (!isPlaying) return;
     const interval = setInterval(() => {
@@ -62,7 +68,12 @@ const HouseholdView = () => {
       }
       const hd = householdYear[d];
       const { water, electricity } = calcDailyConsumption(family, hd);
-      const score = consumptionToScore(family, water, electricity);
+      const rawScore = consumptionToScore(family, water, electricity);
+
+      // Moving average + blend with raw -> clearer trends, fewer "same" oscillations
+      smoothedRef.current = [...smoothedRef.current.slice(-(SMOOTH_WINDOW - 1)), rawScore];
+      const avg = smoothedRef.current.reduce((s, v) => s + v, 0) / smoothedRef.current.length;
+      const score = Math.round(avg * 0.75 + rawScore * 0.25);
       const state = getTreeState(score);
 
       setHistory((h) => [...h, { day: d, score, state, water, electricity }]);
@@ -134,7 +145,7 @@ const HouseholdView = () => {
       {/* Drevo */}
       <div className="lg:col-span-3 flex flex-col items-center gap-4">
         <div className="w-full max-w-lg p-6 rounded-2xl bg-card border border-border shadow-sm">
-          <AmbientTree state={state} score={currentScore} transitionSpeed={Math.min(speed, 4)} />
+          <AmbientTree state={state} score={currentScore} transitionSpeed={speed} />
         </div>
         <YearTimeline
           history={history}
