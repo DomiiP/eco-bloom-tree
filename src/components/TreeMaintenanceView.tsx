@@ -4,7 +4,7 @@ import AmbientTree from "@/components/AmbientTree";
 import SimulationControls from "@/components/SimulationControls";
 import YearTimeline from "@/components/YearTimeline";
 import TimelineLegend from "@/components/TimelineLegend";
-import TreeStatusBanner, { StatusInfo, StatusKind } from "@/components/TreeStatusBanner";
+import TreeStatusBanner, { StatusInfo } from "@/components/TreeStatusBanner";
 import { Button } from "@/components/ui/button";
 import { generateYearWeather, DayWeather } from "@/lib/weather";
 import { TreeState, getTreeState, dayToDate, stateIndex } from "@/lib/treeUtils";
@@ -130,23 +130,30 @@ const TreeMaintenanceView = () => {
   const [recentChange, setRecentChange] = useState<{ direction: "up" | "down"; from: string; to: string } | null>(null);
   const [pendingWater, setPendingWater] = useState(0);
   const [pendingLight, setPendingLight] = useState(0);
-  const [waterReserve, setWaterReserve] = useState(120); // start with small buffer
-  const [lightReserve, setLightReserve] = useState(20);
+  // Two-bucket model
+  const [naturalWater, setNaturalWater] = useState(20); // L
+  const [naturalLight, setNaturalLight] = useState(10); // h
+  const [userWater, setUserWater] = useState(0); // L (decays)
+  const [userLight, setUserLight] = useState(0); // h-equivalent (decays)
   const [lastChangeDay, setLastChangeDay] = useState(-7);
 
   const dayRef = useRef(0);
   const scoreRef = useRef(70);
   const lastChangeRef = useRef(-7);
-  const waterReserveRef = useRef(120);
-  const lightReserveRef = useRef(20);
+  const naturalWaterRef = useRef(20);
+  const naturalLightRef = useRef(10);
+  const userWaterRef = useRef(0);
+  const userLightRef = useRef(0);
   const pendingWaterRef = useRef(0);
   const pendingLightRef = useRef(0);
 
   dayRef.current = day;
   scoreRef.current = score;
   lastChangeRef.current = lastChangeDay;
-  waterReserveRef.current = waterReserve;
-  lightReserveRef.current = lightReserve;
+  naturalWaterRef.current = naturalWater;
+  naturalLightRef.current = naturalLight;
+  userWaterRef.current = userWater;
+  userLightRef.current = userLight;
   pendingWaterRef.current = pendingWater;
   pendingLightRef.current = pendingLight;
 
@@ -164,14 +171,13 @@ const TreeMaintenanceView = () => {
 
       const today = weather[d];
 
-      // Apply pending additions on the first day of each evaluation week
+      // Apply pending user additions on the first day of each weekly cycle
       const isWeekStart = d % 7 === 0;
-      let newWaterReserve = waterReserveRef.current;
-      let newLightReserve = lightReserveRef.current;
+      let newUserWater = userWaterRef.current;
+      let newUserLight = userLightRef.current;
       let acuteStress = 0;
 
       if (isWeekStart && (pendingWaterRef.current > 0 || pendingLightRef.current > 0)) {
-        // Compute weekly needs to detect overdose
         const upcoming = weather.slice(d, Math.min(d + 7, 365));
         const weekWaterNeed = upcoming.reduce((s, w) => s + dailyWaterNeed(w), 0);
         const weekLightNeed = upcoming.reduce((s, w) => s + dailyLightNeed(w), 0);
@@ -179,67 +185,88 @@ const TreeMaintenanceView = () => {
         if (pendingWaterRef.current > weekWaterNeed * ACUTE_WATER_FACTOR) {
           acuteStress += 8;
         }
-        if (pendingLightRef.current > weekLightNeed * ACUTE_LIGHT_FACTOR) {
+        if (pendingLightRef.current * 7 > weekLightNeed * ACUTE_LIGHT_FACTOR) {
           acuteStress += 6;
         }
 
-        newWaterReserve = Math.min(WATER_RESERVE_CAP, newWaterReserve + pendingWaterRef.current);
-        newLightReserve = Math.min(LIGHT_RESERVE_CAP, newLightReserve + pendingLightRef.current * 0.4 * 7);
+        newUserWater += pendingWaterRef.current;
+        // user "light" amount is per-day intensity -> spread as 7 days of hours
+        newUserLight += pendingLightRef.current * 7;
         pendingWaterRef.current = 0;
         pendingLightRef.current = 0;
         setPendingWater(0);
         setPendingLight(0);
       }
 
-      // Natural input
-      newWaterReserve += today.rainMm * 1.5;
-      newLightReserve += today.sunHours;
-
-      // Drain by daily need
+      // Compute daily needs
       const wNeed = dailyWaterNeed(today);
       const lNeed = dailyLightNeed(today);
-      newWaterReserve = Math.max(0, newWaterReserve - wNeed);
-      newLightReserve = Math.max(0, newLightReserve - lNeed);
 
-      // Cap (excess simply spills, but already counted in acute stress)
-      newWaterReserve = Math.min(WATER_RESERVE_CAP, newWaterReserve);
-      newLightReserve = Math.min(LIGHT_RESERVE_CAP, newLightReserve);
+      // Natural reserve: capped so nature alone can never overdose.
+      // Cap = a few days of need (computed against rolling avg).
+      const naturalWaterCap = wNeed * 5;
+      const naturalLightCap = lNeed * 4;
+      let newNaturalWater = naturalWaterRef.current + today.rainMm * 1.2;
+      let newNaturalLight = naturalLightRef.current + today.sunHours;
+      newNaturalWater = Math.min(naturalWaterCap, newNaturalWater);
+      newNaturalLight = Math.min(naturalLightCap, newNaturalLight);
 
-      // Daily score drift based on reserve coverage (forward 3 days look)
+      // Drain natural first, then user
+      let drainW = wNeed;
+      const fromNatW = Math.min(newNaturalWater, drainW);
+      newNaturalWater -= fromNatW;
+      drainW -= fromNatW;
+      newUserWater = Math.max(0, newUserWater - drainW);
+
+      let drainL = lNeed;
+      const fromNatL = Math.min(newNaturalLight, drainL);
+      newNaturalLight -= fromNatL;
+      drainL -= fromNatL;
+      newUserLight = Math.max(0, newUserLight - drainL);
+
+      // Exponential decay of user reserve (so big dumps don't last forever)
+      newUserWater = newUserWater * 0.88;
+      newUserLight = newUserLight * 0.85;
+
+      // Score drift based on coverage of next 3 days
       const lookahead = weather.slice(d, Math.min(d + 3, 365));
       const wNeedAhead = lookahead.reduce((s, w) => s + dailyWaterNeed(w), 0);
       const lNeedAhead = lookahead.reduce((s, w) => s + dailyLightNeed(w), 0);
-      const wRatio = newWaterReserve / Math.max(1, wNeedAhead);
-      const lRatio = newLightReserve / Math.max(1, lNeedAhead);
+      const totalW = newNaturalWater + newUserWater;
+      const totalL = newNaturalLight + newUserLight;
+      const wRatio = totalW / Math.max(1, wNeedAhead);
+      const lRatio = totalL / Math.max(1, lNeedAhead);
 
       let dailyDrift = 0;
-      // Reward balanced reserves
-      if (wRatio >= 0.85 && wRatio <= 1.4 && lRatio >= 0.85 && lRatio <= 1.4) dailyDrift += 1.2;
-      else if (wRatio >= 0.6 && lRatio >= 0.6 && wRatio <= 1.6 && lRatio <= 1.6) dailyDrift += 0.2;
-      // Penalize deficits
-      if (wRatio < 0.6) dailyDrift -= 1.5;
-      if (lRatio < 0.6) dailyDrift -= 1.2;
-      // Penalize sustained excess (less harsh than acute)
+      // Reward balance
+      if (wRatio >= 0.85 && wRatio <= 1.4 && lRatio >= 0.85 && lRatio <= 1.4) dailyDrift += 1.4;
+      else if (wRatio >= 0.55 && lRatio >= 0.55 && wRatio <= 1.6 && lRatio <= 1.6) dailyDrift += 0.4;
+      // Mild deficits (so without user input the tree drifts in lower half but rarely dies)
+      if (wRatio < 0.55) dailyDrift -= 0.7;
+      if (lRatio < 0.55) dailyDrift -= 0.6;
+      // Severe deficits (only happens with bad weather like drought + cloudy)
+      if (wRatio < 0.25) dailyDrift -= 0.8;
+      if (lRatio < 0.25) dailyDrift -= 0.7;
+      // Sustained excess (only possible from user adds)
       if (wRatio > 1.8) dailyDrift -= 0.6;
       if (lRatio > 1.8) dailyDrift -= 0.5;
 
-      // Weather penalties
-      if (today.isDrought) dailyDrift -= 0.6;
-      if (today.isHeatwave) dailyDrift -= 0.4;
+      // Weather penalties (mild)
+      if (today.isDrought) dailyDrift -= 0.3;
+      if (today.isHeatwave) dailyDrift -= 0.2;
 
       let newScore = Math.max(0, Math.min(100, scoreRef.current + dailyDrift - acuteStress));
 
       // Stage change every 7 days, with 7-day cooldown
       const isEvalDay = (d + 1) % 7 === 0;
       let changedDirection: "up" | "down" | null = null;
-      let fromState: TreeState = getTreeState(scoreRef.current);
+      const fromState: TreeState = getTreeState(scoreRef.current);
       let toState: TreeState = getTreeState(newScore);
 
       if (isEvalDay && d - lastChangeRef.current >= 7) {
         const curIdx = stateIndex(fromState);
         const newIdx = stateIndex(toState);
         if (newIdx > curIdx) {
-          // Only allow +1 stage at a time
           const targetScore = thresholdForStage(curIdx + 1);
           newScore = Math.max(newScore, targetScore);
           toState = getTreeState(newScore);
@@ -255,7 +282,6 @@ const TreeMaintenanceView = () => {
           setLastChangeDay(d);
         }
       } else {
-        // Outside eval window: clamp to current stage so we don't skip
         if (toState !== fromState) {
           const curIdx = stateIndex(fromState);
           const minScore = thresholdForStage(curIdx);
@@ -266,8 +292,10 @@ const TreeMaintenanceView = () => {
       }
 
       setScore(newScore);
-      setWaterReserve(newWaterReserve);
-      setLightReserve(newLightReserve);
+      setNaturalWater(newNaturalWater);
+      setNaturalLight(newNaturalLight);
+      setUserWater(newUserWater);
+      setUserLight(newUserLight);
       setHistory((h) => [...h, { day: d, score: newScore, state: toState }]);
       setDay(d + 1);
 
@@ -296,8 +324,10 @@ const TreeMaintenanceView = () => {
     setLightToAdd(0);
     setRecentChange(null);
     setLastChangeDay(-7);
-    setWaterReserve(120);
-    setLightReserve(20);
+    setNaturalWater(20);
+    setNaturalLight(10);
+    setUserWater(0);
+    setUserLight(0);
   };
 
   const handleAdd = () => {
@@ -310,15 +340,15 @@ const TreeMaintenanceView = () => {
   const todayWeather = weather[Math.min(day, 364)];
   const date = dayToDate(Math.min(day, 364));
 
-  // Continuous status (uses reserves vs upcoming 3-day need + acute pending check)
+  // Continuous status (uses combined reserves vs upcoming 3-day need + acute pending check)
   const status: StatusInfo = useMemo(() => {
     const lookahead = weather.slice(day, Math.min(day + 3, 365));
     const wNeedAhead = lookahead.reduce((s, w) => s + dailyWaterNeed(w), 0) || 1;
     const lNeedAhead = lookahead.reduce((s, w) => s + dailyLightNeed(w), 0) || 1;
-    const wRatio = (waterReserve + pendingWater) / wNeedAhead;
-    const lRatio = (lightReserve + pendingLight * 0.4 * 7) / lNeedAhead;
+    const wRatio = (naturalWater + userWater + pendingWater) / wNeedAhead;
+    const lRatio = (naturalLight + userLight + pendingLight * 7) / lNeedAhead;
     return buildStatus(wRatio, lRatio);
-  }, [day, waterReserve, lightReserve, pendingWater, pendingLight, weather]);
+  }, [day, naturalWater, naturalLight, userWater, userLight, pendingWater, pendingLight, weather]);
 
   // Events for timeline (max 15)
   const events = useMemo(() => {
