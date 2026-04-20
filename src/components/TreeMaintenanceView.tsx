@@ -103,13 +103,20 @@ function buildStatus(waterRatio: number, lightRatio: number): StatusInfo {
 }
 
 // === Reservoir model ===
-// Water reserve (L) drains per day according to need; natural rain & user adds top it up.
-// Excess in reserve causes short stress, but sustains health for many days afterwards.
-const WATER_RESERVE_CAP = 800; // total bucket
-const LIGHT_RESERVE_CAP = 80; // accumulated light hours
-// "Acute" overdose threshold: too much added in a single week relative to weekly need
-const ACUTE_WATER_FACTOR = 2.5; // pending water > 2.5× weekly need = acute stress
-const ACUTE_LIGHT_FACTOR = 2.5;
+// Two separate "buckets":
+//   - naturalReserve: filled ONLY by nature (rain / sun). Capped at exactly the
+//     "balanced" coverage so nature alone can never produce an "overdose".
+//   - userReserve: filled by user additions. Decays exponentially each day so
+//     a big dump gives a short stress spike + a long tail of healthy supply.
+// Effective reserve = naturalReserve + userReserve.
+const NATURAL_WATER_CAP_DAYS = 5; // nature can buffer up to ~5 days of water need
+const NATURAL_LIGHT_CAP_DAYS = 4; // and ~4 days of light need
+// User reserve decays each day (exponential). 0.82 -> ~half life ~3.5 days.
+const USER_WATER_DECAY = 0.82;
+const USER_LIGHT_DECAY = 0.78;
+// Acute overdose: user reserve clearly above weekly need
+const ACUTE_WATER_FACTOR = 2.0;
+const ACUTE_LIGHT_FACTOR = 2.0;
 
 const TreeMaintenanceView = () => {
   const weather = useMemo(() => generateYearWeather(), []);
