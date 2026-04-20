@@ -109,11 +109,7 @@ function buildStatus(waterRatio: number, lightRatio: number): StatusInfo {
 //   - userReserve: filled by user additions. Decays exponentially each day so
 //     a big dump gives a short stress spike + a long tail of healthy supply.
 // Effective reserve = naturalReserve + userReserve.
-const NATURAL_WATER_CAP_DAYS = 5; // nature can buffer up to ~5 days of water need
-const NATURAL_LIGHT_CAP_DAYS = 4; // and ~4 days of light need
-// User reserve decays each day (exponential). 0.82 -> ~half life ~3.5 days.
-const USER_WATER_DECAY = 0.82;
-const USER_LIGHT_DECAY = 0.78;
+// Acute overdose: user reserve clearly above weekly need
 // Acute overdose: user reserve clearly above weekly need
 const ACUTE_WATER_FACTOR = 2.0;
 const ACUTE_LIGHT_FACTOR = 2.0;
@@ -369,8 +365,10 @@ const TreeMaintenanceView = () => {
   const lookahead = weather.slice(day, Math.min(day + 3, 365));
   const wNeed3 = lookahead.reduce((s, w) => s + dailyWaterNeed(w), 0);
   const lNeed3 = lookahead.reduce((s, w) => s + dailyLightNeed(w), 0);
-  const waterCoverPct = Math.min(200, Math.round(((waterReserve + pendingWater) / Math.max(1, wNeed3)) * 100));
-  const lightCoverPct = Math.min(200, Math.round(((lightReserve + pendingLight * 0.4 * 7) / Math.max(1, lNeed3)) * 100));
+  const totalWaterReserve = naturalWater + userWater + pendingWater;
+  const totalLightReserve = naturalLight + userLight + pendingLight * 7;
+  const waterCoverPct = Math.min(200, Math.round((totalWaterReserve / Math.max(1, wNeed3)) * 100));
+  const lightCoverPct = Math.min(200, Math.round((totalLightReserve / Math.max(1, lNeed3)) * 100));
 
   const coverColor = (pct: number) => {
     if (pct < 60) return "hsl(var(--destructive))";
@@ -453,7 +451,7 @@ const TreeMaintenanceView = () => {
               label="Voda"
               pct={waterCoverPct}
               color={coverColor(waterCoverPct)}
-              detail={`${Math.round(waterReserve)} L v zalogi`}
+              detail={`Narava ${Math.round(naturalWater)} L${userWater > 0.5 ? ` + dodano ${Math.round(userWater)} L` : ""}`}
             />
 
             {/* Light reserve */}
@@ -462,7 +460,7 @@ const TreeMaintenanceView = () => {
               label="Svetloba"
               pct={lightCoverPct}
               color={coverColor(lightCoverPct)}
-              detail={`${Math.round(lightReserve)} h v zalogi`}
+              detail={`Narava ${Math.round(naturalLight)} h${userLight > 0.5 ? ` + dodano ${Math.round(userLight)} h` : ""}`}
             />
           </div>
 
