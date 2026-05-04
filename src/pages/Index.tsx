@@ -1,14 +1,7 @@
-import { useState } from "react";
-import { TreeDeciduous, Sprout, Home } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { TreeDeciduous } from "lucide-react";
 import TreeMaintenanceView from "@/components/TreeMaintenanceView";
-import HouseholdView from "@/components/HouseholdView";
-
-type View = "maintenance" | "household";
 
 const Index = () => {
-  const [view, setView] = useState<View>("maintenance");
-
   return (
     <div className="min-h-screen bg-background font-body">
       <header className="border-b border-border bg-card/80 backdrop-blur-sm sticky top-0 z-10">
@@ -16,27 +9,6 @@ const Index = () => {
           <div className="flex items-center gap-3">
             <TreeDeciduous className="w-6 h-6 text-primary" />
             <h1 className="font-display text-xl text-foreground">EcoTree</h1>
-          </div>
-
-          <div className="flex items-center gap-1 p-1 rounded-lg bg-secondary">
-            <Button
-              size="sm"
-              variant={view === "maintenance" ? "default" : "ghost"}
-              onClick={() => setView("maintenance")}
-              className="h-8 text-xs"
-            >
-              <Sprout className="w-4 h-4" />
-              Vzdrževanje drevesa
-            </Button>
-            <Button
-              size="sm"
-              variant={view === "household" ? "default" : "ghost"}
-              onClick={() => setView("household")}
-              className="h-8 text-xs"
-            >
-              <Home className="w-4 h-4" />
-              Poraba virov
-            </Button>
           </div>
 
           <a
@@ -50,19 +22,17 @@ const Index = () => {
         </div>
       </header>
 
-      <main className="container max-w-6xl mx-auto px-4 py-8">
-        <div className="text-center mb-8">
-          <h2 className="font-display text-2xl md:text-3xl text-foreground mb-2">
-            {view === "maintenance" ? "Vzdrževanje drevesa skozi leto" : "Poraba virov v gospodinjstvu"}
+      <main className="container max-w-[1440px] mx-auto px-4 py-8">
+        <div className="text-center mb-8 space-y-3">
+          <h2 className="font-display text-2xl md:text-3xl text-foreground">
+            Vzdrževanje drevesa skozi leto
           </h2>
           <p className="text-muted-foreground font-body max-w-2xl mx-auto text-sm leading-relaxed">
-            {view === "maintenance"
-              ? "Pomagaj drevesu skozi leto. Ko narava ne da dovolj vode ali sonca, ga moraš dopolniti – a pazi, da ne pretiravaš. Vsaka sekunda predstavlja en dan."
-              : "Poraba družine se spreminja: vikendi, prazniki, gostje in počitnice vplivajo na zdravje drevesa. Sestavi družino in opazuj leto trajnosti."}
+            Glavna ideja je spremljati, kako varčevanje z vodo in elektriko doma vpliva na drevo. Manjša poraba pomeni več zaloge za liste, barvo in gostoto krošnje.
           </p>
         </div>
 
-        {view === "maintenance" ? <TreeMaintenanceView /> : <HouseholdView />}
+        <TreeMaintenanceView />
 
         <footer className="mt-16 pt-6 border-t border-border text-center">
           <p className="text-xs text-muted-foreground font-body">

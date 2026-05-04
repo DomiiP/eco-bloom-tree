@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Droplets, Zap, Sun, CloudRain, Thermometer, Plus, AlertCircle } from "lucide-react";
+import { Droplets, Zap, Sun, CloudRain, Thermometer, Plus, AlertCircle, FastForward, Pause, Play, RotateCcw } from "lucide-react";
 import AmbientTree from "@/components/AmbientTree";
 import SimulationControls from "@/components/SimulationControls";
 import YearTimeline from "@/components/YearTimeline";
@@ -25,6 +25,21 @@ interface DayLog {
   day: number;
   score: number;
   state: TreeState;
+  waterNeed: number;
+  lightNeed: number;
+  waterReserve: number;
+  lightReserve: number;
+  waterRatio: number;
+  lightRatio: number;
+}
+
+interface ActionLogEntry {
+  id: number;
+  day: number;
+  week: number;
+  category: "water" | "light";
+  label: string;
+  amount: number;
 }
 
 const stateLabels: Record<TreeState, string> = {
@@ -113,6 +128,9 @@ function buildStatus(waterRatio: number, lightRatio: number): StatusInfo {
 // Acute overdose: user reserve clearly above weekly need
 const ACUTE_WATER_FACTOR = 2.0;
 const ACUTE_LIGHT_FACTOR = 2.0;
+const TREE_TANK_DECAY_DAYS = 45;
+const TREE_TANK_CAPACITY = 100;
+const ELECTRICITY_VISUAL_GAIN = 3;
 
 const TreeMaintenanceView = () => {
   const weather = useMemo(() => generateYearWeather(), []);
@@ -123,9 +141,14 @@ const TreeMaintenanceView = () => {
   const [waterToAdd, setWaterToAdd] = useState(0);
   const [lightToAdd, setLightToAdd] = useState(0);
   const [history, setHistory] = useState<DayLog[]>([]);
+  const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
   const [recentChange, setRecentChange] = useState<{ direction: "up" | "down"; from: string; to: string } | null>(null);
   const [pendingWater, setPendingWater] = useState(0);
   const [pendingLight, setPendingLight] = useState(0);
+  const [savedWater, setSavedWater] = useState(0);
+  const [savedLight, setSavedLight] = useState(0);
+  const [selectedWaterAction, setSelectedWaterAction] = useState<string | null>(null);
+  const [selectedLightAction, setSelectedLightAction] = useState<string | null>(null);
   // Two-bucket model
   const [naturalWater, setNaturalWater] = useState(20); // L
   const [naturalLight, setNaturalLight] = useState(10); // h
@@ -292,7 +315,22 @@ const TreeMaintenanceView = () => {
       setNaturalLight(newNaturalLight);
       setUserWater(newUserWater);
       setUserLight(newUserLight);
-      setHistory((h) => [...h, { day: d, score: newScore, state: toState }]);
+      setSavedWater((value) => Math.max(0, value - TREE_TANK_CAPACITY / TREE_TANK_DECAY_DAYS));
+      setSavedLight((value) => Math.max(0, value - TREE_TANK_CAPACITY / TREE_TANK_DECAY_DAYS));
+      setHistory((h) => [
+        ...h,
+        {
+          day: d,
+          score: newScore,
+          state: toState,
+          waterNeed: wNeed,
+          lightNeed: lNeed,
+          waterReserve: totalW,
+          lightReserve: totalL,
+          waterRatio: wRatio,
+          lightRatio: lRatio,
+        },
+      ]);
       setDay(d + 1);
 
       if (changedDirection) {
@@ -314,10 +352,15 @@ const TreeMaintenanceView = () => {
     setDay(0);
     setScore(70);
     setHistory([]);
+    setActionLog([]);
     setPendingWater(0);
     setPendingLight(0);
+    setSavedWater(0);
+    setSavedLight(0);
     setWaterToAdd(0);
     setLightToAdd(0);
+    setSelectedWaterAction(null);
+    setSelectedLightAction(null);
     setRecentChange(null);
     setLastChangeDay(-7);
     setNaturalWater(20);
@@ -326,11 +369,45 @@ const TreeMaintenanceView = () => {
     setUserLight(0);
   };
 
-  const handleAdd = () => {
-    setPendingWater((p) => p + waterToAdd);
-    setPendingLight((p) => p + lightToAdd);
+  const handleAdd = (waterAmount: number = 0, lightAmount: number = 0, waterLabel: string | null = null, lightLabel: string | null = null) => {
+    const week = Math.floor(day / 7) + 1;
+
+    setActionLog((entries) => {
+      const nextEntries = [...entries];
+
+      if (waterAmount > 0) {
+        nextEntries.unshift({
+          id: Date.now(),
+          day,
+          week,
+          category: "water",
+          label: waterLabel ?? "Prihranek vode",
+          amount: waterAmount,
+        });
+      }
+
+      if (lightAmount > 0) {
+        nextEntries.unshift({
+          id: Date.now() + 1,
+          day,
+          week,
+          category: "light",
+          label: lightLabel ?? "Prihranek elektrike",
+          amount: lightAmount,
+        });
+      }
+
+      return nextEntries.slice(0, 12);
+    });
+
+    setSavedWater((value) => Math.min(TREE_TANK_CAPACITY, value + waterAmount));
+    setSavedLight((value) => Math.min(TREE_TANK_CAPACITY, value + lightAmount * ELECTRICITY_VISUAL_GAIN));
+    setPendingWater((p) => p + waterAmount);
+    setPendingLight((p) => p + lightAmount);
     setWaterToAdd(0);
     setLightToAdd(0);
+    setSelectedWaterAction(null);
+    setSelectedLightAction(null);
   };
 
   const todayWeather = weather[Math.min(day, 364)];
@@ -411,161 +488,552 @@ const TreeMaintenanceView = () => {
     return "hsl(var(--destructive))";
   };
 
+  const weeklySummaries = useMemo(() => {
+    const byWeek = new Map<number, DayLog[]>();
+    history.forEach((entry) => {
+      const weekIndex = Math.floor(entry.day / 7);
+      const bucket = byWeek.get(weekIndex) ?? [];
+      bucket.push(entry);
+      byWeek.set(weekIndex, bucket);
+    });
+
+    return Array.from(byWeek.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([weekIndex, entries]) => {
+        const waterTotal = entries.reduce((sum, entry) => sum + entry.waterNeed, 0);
+        const lightTotal = entries.reduce((sum, entry) => sum + entry.lightNeed, 0);
+        const avgScore = Math.round(entries.reduce((sum, entry) => sum + entry.score, 0) / entries.length);
+        const avgWaterRatio = entries.reduce((sum, entry) => sum + entry.waterRatio, 0) / entries.length;
+        const avgLightRatio = entries.reduce((sum, entry) => sum + entry.lightRatio, 0) / entries.length;
+
+        return {
+          weekIndex,
+          startDay: entries[0].day,
+          endDay: entries[entries.length - 1].day,
+          waterTotal,
+          lightTotal,
+          avgScore,
+          avgWaterRatio,
+          avgLightRatio,
+          state: entries[entries.length - 1].state,
+        };
+      });
+  }, [history]);
+
+  const currentWeekIndex = Math.floor(day / 7);
+  const currentWeekEntries = history.filter((entry) => Math.floor(entry.day / 7) === currentWeekIndex);
+  const currentWeekWater = currentWeekEntries.reduce((sum, entry) => sum + entry.waterNeed, 0);
+  const currentWeekLight = currentWeekEntries.reduce((sum, entry) => sum + entry.lightNeed, 0);
+  const previousWeekSummary = weeklySummaries.find((week) => week.weekIndex === currentWeekIndex - 1) ?? null;
+  const currentWeekSummary = weeklySummaries.find((week) => week.weekIndex === currentWeekIndex) ?? null;
+  const waterTarget = Math.max(...waterChoices, 1);
+  const electricityTarget = Math.max(...lightChoices, 1);
+  const recentWeeks = weeklySummaries.slice(-4);
+  const treeWaterLevel = Math.max(0, Math.min(1, savedWater / TREE_TANK_CAPACITY));
+  const treeLightLevel = Math.max(0, Math.min(1, savedLight / TREE_TANK_CAPACITY));
+  const humanWaterLevel = 1 - treeWaterLevel;
+  const humanLightLevel = 1 - treeLightLevel;
+
+  const waterActionLabels = ["Krajši tuš", "Zapri pipo", "Eno pranje manj", "Manj pretakanja"];
+  const electricityActionLabels = ["Ugasni luči", "Izklopi stand-by", "Krajša raba naprav", "Več naravne svetlobe"];
+  const recentActions = actionLog.slice(0, 6);
+
+  const currentWeekWaterPct = Math.round((currentWeekWater / Math.max(1, waterTarget)) * 100);
+  const currentWeekLightPct = Math.round((currentWeekLight / Math.max(1, electricityTarget)) * 100);
+
   return (
-    <div className="grid lg:grid-cols-5 gap-6 items-start">
-      {/* Tree column */}
-      <div className="lg:col-span-3 flex flex-col items-center gap-4">
-        <div className="w-full max-w-lg p-6 rounded-2xl bg-card border border-border shadow-sm">
-          <AmbientTree state={state} score={score} transitionSpeed={speed} />
+    <div className="flex flex-col gap-6">
+      <div className="w-full">
+        <div className="w-full p-6 rounded-2xl bg-card border border-border shadow-sm">
+          <AmbientTree
+            state={state}
+            score={score}
+            transitionSpeed={speed}
+            waterLevel={treeWaterLevel * 1.6}
+            lightLevel={treeLightLevel * 1.6}
+            humanWaterLevel={humanWaterLevel}
+            humanLightLevel={humanLightLevel}
+          />
         </div>
+        {/*
         <YearTimeline history={history} events={events} currentDay={day} />
+        <div className="w-full">
+          <TimelineLegend variant="weather" />
+        </div>
+        */}
       </div>
 
-      {/* Controls column */}
-      <div className="lg:col-span-2 space-y-4">
-        <SimulationControls
-          isPlaying={isPlaying}
-          speed={speed}
-          onPlayPause={() => setIsPlaying((p) => !p)}
-          onReset={reset}
-          onSpeedChange={setSpeed}
-        />
+      <div className="grid gap-6 xl:grid-cols-[minmax(240px,0.4fr)_minmax(0,1.6fr)]">
+        <div className="rounded-2xl border border-border bg-card shadow-sm p-4 space-y-4 flex flex-col">
+          <div>
+            <p className="text-[11px] text-muted-foreground font-body uppercase tracking-wide mb-3">
+              Predvajanje
+            </p>
+          </div>
 
-        {/* Persistent status banner */}
+          <div className="flex flex-col gap-3">
+            <Button size="sm" onClick={() => setIsPlaying((p) => !p)} className="w-full">
+              {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+              {isPlaying ? "Pavza" : "Predvajaj"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={reset} className="w-full">
+              <RotateCcw className="w-4 h-4" />
+              Ponastavi
+            </Button>
+
+            <div className="rounded-xl border border-border bg-secondary/25 px-3 py-3">
+              <div className="flex items-center gap-2 text-muted-foreground mb-2">
+                <FastForward className="w-4 h-4" />
+                <span className="font-body text-xs font-medium">{speed}x</span>
+              </div>
+              <div className="grid grid-cols-4 gap-1">
+                {[1, 3, 7, 14].map((value) => (
+                  <Button
+                    key={value}
+                    size="sm"
+                    variant={speed === value ? "default" : "outline"}
+                    onClick={() => setSpeed(value)}
+                    className="h-7 text-xs px-1"
+                  >
+                    {value}x
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border/50 bg-secondary/10 px-3 py-2">
+              <p className="text-[10px] text-muted-foreground font-body leading-relaxed">
+                Dan: <span className="font-semibold text-foreground">{day + 1}/365</span>
+              </p>
+              <p className="text-[10px] text-muted-foreground font-body leading-relaxed mt-1">
+                {isPlaying ? "Simulacija teče..." : "Pripravljeno zastart"}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-border bg-card shadow-sm p-4 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] text-muted-foreground font-body uppercase tracking-wide">
+              Zmanjšaj porabo doma
+            </p>
+            <span className="text-[11px] text-muted-foreground font-body">
+              Teden {currentWeekIndex + 1}
+            </span>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm">
+              <Droplets className="w-4 h-4" style={{ color: "hsl(var(--weather-storm))" }} />
+              <span className="font-body font-medium">Voda</span>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {waterChoices
+                .filter((amt) => amt > 0)
+                .map((amt, index) => {
+                  const label = waterActionLabels[index] ?? "Prihranek vode";
+                  const fillHeight = Math.max(18, Math.min(100, Math.round((amt / Math.max(...waterChoices)) * 100)));
+
+                  return (
+                    <Button
+                      key={`water-${amt}-${index}`}
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleAdd(amt, 0, label, null)}
+                      className="h-auto min-h-20 px-3 py-3 text-left justify-start"
+                    >
+                      <span className="flex w-full items-center gap-3">
+                        <span className="relative flex h-14 w-8 shrink-0 items-end overflow-hidden rounded-full border border-white/40 bg-white/20">
+                          {/* Dashed outline showing empty tank portion */}
+                          <span className="absolute inset-0 rounded-full border-2 border-dashed border-white/90 pointer-events-none" />
+                          {/* Filled portion */}
+                          <span
+                            className="w-full rounded-full bg-[linear-gradient(180deg,#8fd3ff_0%,#2f8fd8_100%)] transition-all duration-500"
+                            style={{ height: `${fillHeight}%` }}
+                          />
+                        </span>
+                        <span className="flex flex-col items-start gap-0.5">
+                          <span className="font-body font-medium text-xs">{label}</span>
+                          <span className="text-[11px] opacity-80">prihrani {amt} L</span>
+                        </span>
+                      </span>
+                    </Button>
+                  );
+                })}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm">
+              <Zap className="w-4 h-4" style={{ color: "hsl(var(--accent))" }} />
+              <span className="font-body font-medium">Elektrika</span>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {lightChoices
+                .filter((amt) => amt > 0)
+                .map((amt, index) => {
+                  const label = electricityActionLabels[index] ?? "Prihranek elektrike";
+                  const fillHeight = Math.max(18, Math.min(100, Math.round((amt / Math.max(...lightChoices)) * 100)));
+
+                  return (
+                    <Button
+                      key={`light-${amt}-${index}`}
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleAdd(0, amt, null, label)}
+                      className="h-auto min-h-20 px-3 py-3 text-left justify-start"
+                    >
+                      <span className="flex w-full items-center gap-3">
+                        <span className="relative flex h-14 w-8 shrink-0 items-end overflow-hidden rounded-full border border-white/40 bg-white/20">
+                          {/* Dashed outline showing empty tank portion */}
+                          <span className="absolute inset-0 rounded-full border-2 border-dashed border-white/90 pointer-events-none" />
+                          {/* Filled portion */}
+                          <span
+                            className="w-full rounded-full bg-[linear-gradient(180deg,#ffe58f_0%,#f2b705_100%)] transition-all duration-500"
+                            style={{ height: `${fillHeight}%` }}
+                          />
+                        </span>
+                        <span className="flex flex-col items-start gap-0.5">
+                          <span className="font-body font-medium text-xs">{label}</span>
+                          <span className="text-[11px] opacity-80">prihrani {amt} h svetlobe</span>
+                        </span>
+                      </span>
+                    </Button>
+                  );
+                })}
+            </div>
+          </div>
+
+          {(pendingWater > 0 || pendingLight > 0) && (
+            <p className="text-[11px] text-primary font-body text-center">
+              Na voljo za naslednji teden: +{pendingWater}L vode, +{pendingLight} svetlobe
+            </p>
+          )}
+        </div>
+
+        {/*
         <TreeStatusBanner
           status={status}
           recentChange={recentChange}
           onDismissChange={() => setRecentChange(null)}
         />
 
-        {/* Today + needs panel */}
-        <div className="p-4 rounded-xl bg-card border border-border space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="font-display text-base text-foreground">
-              {date.dayOfMonth}. {date.monthName}
-            </h3>
-            <div className="flex items-center gap-1 text-xs">
-              {todayWeather.isDrought && (
-                <span className="px-2 py-0.5 rounded" style={{ backgroundColor: "hsl(var(--weather-drought) / 0.18)", color: "hsl(var(--weather-drought-foreground))" }}>Suša</span>
-              )}
-              {todayWeather.isHeatwave && (
-                <span className="px-2 py-0.5 rounded" style={{ backgroundColor: "hsl(var(--weather-heat) / 0.18)", color: "hsl(var(--weather-heat-foreground))" }}>Vročinski val</span>
-              )}
-              {todayWeather.isStorm && (
-                <span className="px-2 py-0.5 rounded" style={{ backgroundColor: "hsl(var(--weather-storm) / 0.18)", color: "hsl(var(--weather-storm-foreground))" }}>Nevihta</span>
-              )}
+        <div className="rounded-2xl border border-border bg-card shadow-sm overflow-hidden">
+          <div className="bg-gradient-to-br from-secondary/70 via-card to-background p-4">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+              <svg viewBox="0 0 140 140" className="h-24 w-24 shrink-0" aria-hidden="true">
+                <defs>
+                  <linearGradient id="person-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stopColor="hsl(var(--primary) / 0.2)" />
+                    <stop offset="100%" stopColor="hsl(var(--accent) / 0.2)" />
+                  </linearGradient>
+                </defs>
+                <circle cx="70" cy="70" r="62" fill="url(#person-bg)" />
+                <circle cx="70" cy="52" r="16" fill="hsl(var(--foreground) / 0.72)" />
+                <path d="M46 114c4-18 16-29 24-29h0c8 0 20 11 24 29" fill="hsl(var(--foreground) / 0.65)" />
+                <path d="M46 78c8 4 18 8 24 8s16-4 24-8" stroke="hsl(var(--primary))" strokeWidth="5" strokeLinecap="round" fill="none" />
+                <path d="M94 46c10 5 15 14 17 22" stroke="hsl(var(--weather-storm))" strokeWidth="4" strokeLinecap="round" fill="none" />
+                <path d="M94 63l8 8 10-18" fill="none" stroke="hsl(var(--weather-storm-foreground))" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M34 47c-7 11-8 22-5 32" stroke="hsl(var(--accent))" strokeWidth="4" strokeLinecap="round" fill="none" />
+                <path d="M28 73c6-2 11-2 16 1" stroke="hsl(var(--accent-foreground))" strokeWidth="4" strokeLinecap="round" fill="none" />
+              </svg>
+              <div className="space-y-2">
+                <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">Glavna ideja</p>
+                <h3 className="font-display text-lg text-foreground">Manj porabe doma, bolj zdravo drevo</h3>
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  Krajši tuš, manj prižganih luči in manj stand-by porabe sprostijo vodo in elektriko, ki jo drevo pretvori v gostejše in bolj barvite liste.
+                </p>
+              </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-2 text-xs">
-            <div className="flex items-center gap-1 text-muted-foreground">
-              <Sun className="w-4 h-4" style={{ color: "hsl(var(--accent))" }} />
-              {todayWeather.sunHours} h
+          <div className="p-4 space-y-4">
+            <div className="space-y-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h3 className="font-display text-base text-foreground">
+                    {date.dayOfMonth}. {date.monthName}
+                  </h3>
+                  <p className="text-xs text-muted-foreground font-body">Dan {day + 1} od 365</p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  {todayWeather.isDrought && (
+                    <span className="px-2 py-0.5 rounded" style={{ backgroundColor: "hsl(var(--weather-drought) / 0.18)", color: "hsl(var(--weather-drought-foreground))" }}>Suša</span>
+                  )}
+                  {todayWeather.isHeatwave && (
+                    <span className="px-2 py-0.5 rounded" style={{ backgroundColor: "hsl(var(--weather-heat) / 0.18)", color: "hsl(var(--weather-heat-foreground))" }}>Vročinski val</span>
+                  )}
+                  {todayWeather.isStorm && (
+                    <span className="px-2 py-0.5 rounded" style={{ backgroundColor: "hsl(var(--weather-storm) / 0.18)", color: "hsl(var(--weather-storm-foreground))" }}>Nevihta</span>
+                  )}
+                  {!todayWeather.isDrought && !todayWeather.isHeatwave && !todayWeather.isStorm && (
+                    <span className="px-2 py-0.5 rounded bg-secondary text-secondary-foreground">Miren dan</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-3">
+                <div className="flex items-center gap-1 rounded-lg bg-secondary/35 px-2.5 py-2 text-muted-foreground">
+                  <Sun className="w-4 h-4" style={{ color: "hsl(var(--accent))" }} />
+                  <span>{todayWeather.sunHours} h svetlobe</span>
+                </div>
+                <div className="flex items-center gap-1 rounded-lg bg-secondary/35 px-2.5 py-2 text-muted-foreground">
+                  <CloudRain className="w-4 h-4" style={{ color: "hsl(var(--weather-storm))" }} />
+                  <span>{todayWeather.rainMm} mm dežja</span>
+                </div>
+                <div className="flex items-center gap-1 rounded-lg bg-secondary/35 px-2.5 py-2 text-muted-foreground">
+                  <Thermometer className="w-4 h-4" style={{ color: "hsl(var(--weather-heat))" }} />
+                  <span>{todayWeather.temperature}°C</span>
+                </div>
+              </div>
             </div>
-            <div className="flex items-center gap-1 text-muted-foreground">
-              <CloudRain className="w-4 h-4" style={{ color: "hsl(var(--weather-storm))" }} />
-              {todayWeather.rainMm} mm
-            </div>
-            <div className="flex items-center gap-1 text-muted-foreground">
-              <Thermometer className="w-4 h-4" style={{ color: "hsl(var(--weather-heat))" }} />
-              {todayWeather.temperature}°C
+
+            <div className="pt-2 border-t border-border space-y-3">
+              <p className="text-[11px] text-muted-foreground font-body uppercase tracking-wide">
+                Zaloge drevesa
+              </p>
+
+              <ReserveBar
+                icon={<Droplets className="w-4 h-4" style={{ color: "hsl(var(--weather-storm))" }} />}
+                label="Voda"
+                pct={waterCoverPct}
+                color={coverColor(waterCoverPct)}
+                detail={`Narava ${Math.round(naturalWater)} L${userWater > 0.5 ? ` + prihranek ${Math.round(userWater)} L` : ""}`}
+              />
+
+              <ReserveBar
+                icon={<Zap className="w-4 h-4" style={{ color: "hsl(var(--accent))" }} />}
+                label="Svetloba"
+                pct={lightCoverPct}
+                color={coverColor(lightCoverPct)}
+                detail={`Narava ${Math.round(naturalLight)} h${userLight > 0.5 ? ` + prihranek ${Math.round(userLight)} h` : ""}`}
+              />
             </div>
           </div>
+        </div>
 
-          {/* Friendly reserve view */}
-          <div className="pt-2 border-t border-border space-y-3">
+        <div className="rounded-2xl border border-border bg-card shadow-sm p-4 space-y-4">
+          <div className="flex items-center justify-between gap-2">
             <p className="text-[11px] text-muted-foreground font-body uppercase tracking-wide">
-              Zaloge drevesa (pokritost potreb naslednjih 3 dni)
+              Dnevnik dejanj
             </p>
-
-            {/* Water reserve */}
-            <ReserveBar
-              icon={<Droplets className="w-4 h-4" style={{ color: "hsl(var(--weather-storm))" }} />}
-              label="Voda"
-              pct={waterCoverPct}
-              color={coverColor(waterCoverPct)}
-              detail={`Narava ${Math.round(naturalWater)} L${userWater > 0.5 ? ` + dodano ${Math.round(userWater)} L` : ""}`}
-            />
-
-            {/* Light reserve */}
-            <ReserveBar
-              icon={<Zap className="w-4 h-4" style={{ color: "hsl(var(--accent))" }} />}
-              label="Svetloba"
-              pct={lightCoverPct}
-              color={coverColor(lightCoverPct)}
-              detail={`Narava ${Math.round(naturalLight)} h${userLight > 0.5 ? ` + dodano ${Math.round(userLight)} h` : ""}`}
-            />
+            <span className="text-[11px] text-muted-foreground font-body">
+              Zadnjih {recentActions.length}
+            </span>
           </div>
 
-          {/* Add controls */}
-          <div className="pt-2 border-t border-border space-y-3">
-            <p className="text-[11px] text-muted-foreground font-body uppercase tracking-wide">
-              Dodaj za naslednji teden
+          {recentActions.length > 0 ? (
+            <div className="space-y-2">
+              {recentActions.map((entry) => (
+                <div key={entry.id} className="rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-xs font-body">
+                  <div className="flex items-center justify-between gap-2 text-muted-foreground">
+                    <span>{entry.category === "water" ? "Voda" : "Elektrika"}</span>
+                    <span>Teden {entry.week} · Dan {entry.day + 1}</span>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-foreground">
+                    <span className="font-medium">{entry.label}</span>
+                    <span>+{entry.amount} {entry.category === "water" ? "L" : "h"}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground font-body">
+              Ko potrdiš prihranek, se bo tukaj prikazal seznam vseh izbranih dejanj.
             </p>
+          )}
+        </div>
+      </div>
 
-            <div className="space-y-1.5">
-              <div className="flex items-center gap-2 text-sm">
-                <Droplets className="w-4 h-4" style={{ color: "hsl(var(--weather-storm))" }} />
-                <span className="font-body font-medium">Voda</span>
-              </div>
-              <div className="flex gap-1">
-                {waterChoices.map((amt) => (
-                  <Button
-                    key={amt}
-                    size="sm"
-                    variant={waterToAdd === amt ? "default" : "outline"}
-                    onClick={() => setWaterToAdd(amt)}
-                    className="h-8 px-2 text-xs flex-1"
-                  >
-                    +{amt}L
-                  </Button>
-                ))}
+      <div className="space-y-4 w-full self-start">
+        <div className="rounded-2xl border border-border bg-card shadow-sm p-4 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] text-muted-foreground font-body uppercase tracking-wide">
+              Zmanjšaj porabo doma
+            </p>
+            <span className="text-[11px] text-muted-foreground font-body">
+              Teden {currentWeekIndex + 1}
+            </span>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm">
+              <Droplets className="w-4 h-4" style={{ color: "hsl(var(--weather-storm))" }} />
+              <span className="font-body font-medium">Voda</span>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {waterChoices
+                .filter((amt) => amt > 0)
+                .map((amt, index) => {
+                  const label = waterActionLabels[index] ?? "Prihranek vode";
+                  const fillHeight = Math.max(18, Math.min(100, Math.round((amt / Math.max(...waterChoices)) * 100)));
+
+                  return (
+                    <Button
+                      key={`water-${amt}-${index}`}
+                      size="sm"
+                      variant={waterToAdd === amt ? "default" : "outline"}
+                      onClick={() => {
+                        setWaterToAdd(amt);
+                        setSelectedWaterAction(label);
+                      }}
+                      className="h-auto min-h-20 px-3 py-3 text-left justify-start"
+                    >
+                      <span className="flex w-full items-center gap-3">
+                        <span className="relative flex h-14 w-8 shrink-0 items-end overflow-hidden rounded-full border border-white/40 bg-white/20">
+                          <span
+                            className="w-full rounded-full bg-[linear-gradient(180deg,#8fd3ff_0%,#2f8fd8_100%)] transition-all duration-500"
+                            style={{ height: `${fillHeight}%` }}
+                          />
+                        </span>
+                        <span className="flex flex-col items-start gap-0.5">
+                          <span className="font-body font-medium text-xs">{label}</span>
+                          <span className="text-[11px] opacity-80">prihrani {amt} L</span>
+                        </span>
+                      </span>
+                    </Button>
+                  );
+                })}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm">
+              <Zap className="w-4 h-4" style={{ color: "hsl(var(--accent))" }} />
+              <span className="font-body font-medium">Elektrika</span>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {lightChoices
+                .filter((amt) => amt > 0)
+                .map((amt, index) => {
+                  const label = electricityActionLabels[index] ?? "Prihranek elektrike";
+                  const fillHeight = Math.max(18, Math.min(100, Math.round((amt / Math.max(...lightChoices)) * 100)));
+
+                  return (
+                    <Button
+                      key={`light-${amt}-${index}`}
+                      size="sm"
+                      variant={lightToAdd === amt ? "default" : "outline"}
+                      onClick={() => {
+                        setLightToAdd(amt);
+                        setSelectedLightAction(label);
+                      }}
+                      className="h-auto min-h-20 px-3 py-3 text-left justify-start"
+                    >
+                      <span className="flex w-full items-center gap-3">
+                        <span className="relative flex h-14 w-8 shrink-0 items-end overflow-hidden rounded-full border border-white/40 bg-white/20">
+                          <span
+                            className="w-full rounded-full bg-[linear-gradient(180deg,#ffe58f_0%,#f2b705_100%)] transition-all duration-500"
+                            style={{ height: `${fillHeight}%` }}
+                          />
+                        </span>
+                        <span className="flex flex-col items-start gap-0.5">
+                          <span className="font-body font-medium text-xs">{label}</span>
+                          <span className="text-[11px] opacity-80">prihrani {amt} h svetlobe</span>
+                        </span>
+                      </span>
+                    </Button>
+                  );
+                })}
+            </div>
+          </div>
+
+          <Button
+            onClick={handleAdd}
+            disabled={waterToAdd === 0 && lightToAdd === 0}
+            className="w-full"
+            size="sm"
+          >
+            <Plus className="w-4 h-4" />
+            Potrdi prihranek
+          </Button>
+
+          {(pendingWater > 0 || pendingLight > 0) && (
+            <p className="text-[11px] text-primary font-body text-center">
+              Na voljo za naslednji teden: +{pendingWater}L vode, +{pendingLight} svetlobe
+            </p>
+          )}
+        </div>
+
+        <div className="rounded-2xl border border-border bg-card shadow-sm p-4 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] text-muted-foreground font-body uppercase tracking-wide">
+              Tedenski dashboard
+            </p>
+            <span className="text-[11px] text-muted-foreground font-body">
+              Limit prehaja iz prejšnjega tedna
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-3">
+            <div className="rounded-xl bg-secondary/35 p-2 space-y-1">
+              <div className="text-[11px] text-muted-foreground">Ta teden</div>
+              <div className="font-body font-semibold text-foreground tabular-nums">{currentWeekWater} L / {currentWeekLight} kWh</div>
+              <div className="text-[11px] text-muted-foreground">
+                {currentWeekSummary
+                  ? `ocena ${currentWeekSummary.avgScore}/100 · voda ${currentWeekWaterPct}% · elektrika ${currentWeekLightPct}%`
+                  : `do zdaj ${currentWeekEntries.length} dni`}
               </div>
             </div>
-
-            <div className="space-y-1.5">
-              <div className="flex items-center gap-2 text-sm">
-                <Zap className="w-4 h-4" style={{ color: "hsl(var(--accent))" }} />
-                <span className="font-body font-medium">Dodatna svetloba</span>
+            <div className="rounded-xl bg-secondary/35 p-2 space-y-1">
+              <div className="text-[11px] text-muted-foreground">Prejšnji teden</div>
+              <div className="font-body font-semibold text-foreground tabular-nums">
+                {previousWeekSummary ? `${previousWeekSummary.waterTotal} L / ${previousWeekSummary.lightTotal} kWh` : "ni podatkov"}
               </div>
-              <div className="flex gap-1">
-                {lightChoices.map((amt) => (
-                  <Button
-                    key={amt}
-                    size="sm"
-                    variant={lightToAdd === amt ? "default" : "outline"}
-                    onClick={() => setLightToAdd(amt)}
-                    className="h-8 px-2 text-xs flex-1"
-                  >
-                    +{amt}
-                  </Button>
-                ))}
+              <div className="text-[11px] text-muted-foreground">
+                {previousWeekSummary ? `ocena ${previousWeekSummary.avgScore}/100` : "začetni okvir"}
               </div>
             </div>
+            <div className="rounded-xl bg-secondary/35 p-2 space-y-1">
+              <div className="text-[11px] text-muted-foreground">Cilj naslednjega</div>
+              <div className="font-body font-semibold text-foreground tabular-nums">{waterTarget} L / {electricityTarget} kWh</div>
+              <div className="text-[11px] text-muted-foreground">{Math.max(0, currentWeekWaterPct - 100)}% nad ciljem</div>
+            </div>
+          </div>
 
-            <Button
-              onClick={handleAdd}
-              disabled={waterToAdd === 0 && lightToAdd === 0}
-              className="w-full"
-              size="sm"
-            >
-              <Plus className="w-4 h-4" />
-              Dodaj
-            </Button>
-            {(pendingWater > 0 || pendingLight > 0) && (
-              <p className="text-[11px] text-primary font-body text-center">
-                Pripravljeno za naslednji teden: +{pendingWater}L vode, +{pendingLight} svetlobe
+          <div className="space-y-2">
+            {recentWeeks.length > 0 ? (
+              recentWeeks.map((week) => {
+                const waterPct = Math.round((week.waterTotal / Math.max(1, waterTarget)) * 100);
+                const lightPct = Math.round((week.lightTotal / Math.max(1, electricityTarget)) * 100);
+
+                return (
+                  <div key={week.weekIndex} className="rounded-xl border border-border/70 bg-background/70 p-3 space-y-2">
+                    <div className="flex items-center justify-between text-[11px] text-muted-foreground font-body">
+                      <span>Teden {week.weekIndex + 1}</span>
+                      <span>{week.startDay + 1} - {week.endDay + 1}. dan · {week.avgScore}/100</span>
+                    </div>
+                    <ReserveBar
+                      icon={<Droplets className="w-4 h-4" style={{ color: "hsl(var(--weather-storm))" }} />}
+                      label="Voda"
+                      pct={waterPct}
+                      color={coverColor(waterPct)}
+                      detail={`${week.waterTotal} L · cilj ${waterTarget} L`}
+                    />
+                    <ReserveBar
+                      icon={<Zap className="w-4 h-4" style={{ color: "hsl(var(--accent))" }} />}
+                      label="Elektrika"
+                      pct={lightPct}
+                      color={coverColor(lightPct)}
+                      detail={`${week.lightTotal} kWh · cilj ${electricityTarget} kWh`}
+                    />
+                  </div>
+                );
+              })
+            ) : (
+              <p className="text-xs text-muted-foreground font-body">
+                Začni predvajanje, da se tukaj pokaže tedenski pregled.
               </p>
             )}
           </div>
 
-          <p className="text-[11px] text-muted-foreground font-body pt-2 border-t border-border leading-relaxed flex items-start gap-1.5">
+          <p className="text-[11px] text-muted-foreground font-body leading-relaxed flex items-start gap-1.5">
             <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />
-            Drevo se ocenjuje vsak teden. Stopnja se lahko spremeni največ enkrat na 7 dni. Velike količine vode/svetlobe povzročijo kratkotrajni stres, a dolgo zalogo.
+            Naslednji teden uporabi kot nov limit: če je poraba nad prejšnjim tednom, jo poskusi zmanjšati v majhnih korakih.
           </p>
         </div>
-
-        <TimelineLegend variant="weather" />
+        */}
       </div>
     </div>
   );
