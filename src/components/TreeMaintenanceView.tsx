@@ -534,8 +534,18 @@ const TreeMaintenanceView = () => {
   const humanWaterLevel = 1 - treeWaterLevel;
   const humanLightLevel = 1 - treeLightLevel;
 
-  const waterActionLabels = ["Krajši tuš", "Zapri pipo", "Eno pranje manj", "Manj pretakanja"];
-  const electricityActionLabels = ["Ugasni luči", "Izklopi stand-by", "Krajša raba naprav", "Več naravne svetlobe"];
+  const waterActionLabels = [
+    "Krajši tuš",
+    "Zbiraj deževnico",
+    "Eno pranje manj",
+    "Ne zalivaj ponoči",
+  ];
+  const electricityActionLabels = [
+    "Ugasni luči",
+    "Izklopi standby",
+    "Skrajšaj uporabo naprav",
+    "Uporabi naravno svetlobo",
+  ];
   const recentActions = actionLog.slice(0, 6);
 
   const currentWeekWaterPct = Math.round((currentWeekWater / Math.max(1, waterTarget)) * 100);
