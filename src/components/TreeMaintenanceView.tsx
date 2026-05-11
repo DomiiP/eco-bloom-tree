@@ -251,8 +251,9 @@ const TreeMaintenanceView = () => {
       const lookahead = weather.slice(d, Math.min(d + 3, 365));
       const wNeedAhead = lookahead.reduce((s, w) => s + dailyWaterNeed(w), 0);
       const lNeedAhead = lookahead.reduce((s, w) => s + dailyLightNeed(w), 0);
-      const totalW = newNaturalWater + newUserWater;
-      const totalL = newNaturalLight + newUserLight;
+      // Include pending amounts so score reflects what user has added (on non-week-start days, pending hasn't been merged yet)
+      const totalW = newNaturalWater + newUserWater + (isWeekStart ? 0 : pendingWaterRef.current);
+      const totalL = newNaturalLight + newUserLight + (isWeekStart ? 0 : pendingLightRef.current * 7);
       const wRatio = totalW / Math.max(1, wNeedAhead);
       const lRatio = totalL / Math.max(1, lNeedAhead);
 
@@ -333,15 +334,17 @@ const TreeMaintenanceView = () => {
       ]);
       setDay(d + 1);
 
+      // Auto-pause every ~60 days (6 times in the year), but allow resuming
+      if ((d + 1) > 0 && (d + 1) % 60 === 0) {
+        setIsPlaying(false);
+      }
+
       if (changedDirection) {
         setRecentChange({
           direction: changedDirection,
           from: stateLabels[fromState],
           to: stateLabels[toState],
         });
-        if (changedDirection === "down") {
-          setIsPlaying(false);
-        }
       }
     }, 1000 / speed);
     return () => clearInterval(interval);
@@ -447,38 +450,24 @@ const TreeMaintenanceView = () => {
   const waterCoverPct = Math.min(200, Math.round((totalWaterReserve / Math.max(1, wNeed3)) * 100));
   const lightCoverPct = Math.min(200, Math.round((totalLightReserve / Math.max(1, lNeed3)) * 100));
 
-  // Dynamic add-options based on what tree actually needs for the upcoming 7 days,
-  // minus what we already have. So smallest = a small top-up, 3rd/4th = ideal,
-  // largest = clearly too much (overdose).
-  const upcoming7 = weather.slice(day, Math.min(day + 7, 365));
-  const week7Water = upcoming7.reduce((s, w) => s + dailyWaterNeed(w), 0);
-  const week7Light = upcoming7.reduce((s, w) => s + dailyLightNeed(w), 0);
-  const waterDeficit = Math.max(0, week7Water - (naturalWater + userWater));
-  // Round helpers: snap to friendly numbers (5 / 10)
-  const snap = (n: number, step: number) => Math.max(step, Math.round(n / step) * step);
-  // Ideal = cover the deficit; small = ~25%; large = ~280% (overdose)
-  const idealW = snap(Math.max(20, waterDeficit), 10);
-  const waterOptions = [
-    0,
-    snap(idealW * 0.25, 5),
-    snap(idealW * 0.6, 10),
-    idealW,
-    snap(idealW * 2.8, 10),
+  // Fixed button amounts based on tank fractions
+  // 1/15, 1/10, 1/5, 1/2 of TREE_TANK_CAPACITY
+  const waterChoices = [
+    Math.round(TREE_TANK_CAPACITY / 15),   // ~7
+    Math.round(TREE_TANK_CAPACITY / 10),   // 10
+    Math.round(TREE_TANK_CAPACITY / 5),    // 20
+    Math.round(TREE_TANK_CAPACITY / 2),    // 50
   ];
-  // Light: user adds "intensity / day", spread over 7 days. So ideal intensity covers deficit/7.
-  const lightDeficit = Math.max(0, week7Light - (naturalLight + userLight));
-  const idealL = Math.max(1, Math.round(lightDeficit / 7));
-  const lightOptions = [
-    0,
-    Math.max(1, Math.round(idealL * 0.3)),
-    Math.max(2, Math.round(idealL * 0.7)),
-    idealL,
-    Math.max(idealL + 2, Math.round(idealL * 2.8)),
+  // Light choices account for ELECTRICITY_VISUAL_GAIN multiplier so buttons don't disable
+  const lightChoices = [
+    Math.round(TREE_TANK_CAPACITY / 15 / ELECTRICITY_VISUAL_GAIN),   // ~2
+    Math.round(TREE_TANK_CAPACITY / 10 / ELECTRICITY_VISUAL_GAIN),   // ~3
+    Math.round(TREE_TANK_CAPACITY / 5 / ELECTRICITY_VISUAL_GAIN),    // ~7
+    Math.round(TREE_TANK_CAPACITY / 2 / ELECTRICITY_VISUAL_GAIN),    // ~17
   ];
-  // Deduplicate consecutive equal numbers (can happen at very small deficits)
-  const dedupe = (arr: number[]) => arr.filter((v, i) => i === 0 || v !== arr[i - 1]);
-  const waterChoices = dedupe(waterOptions);
-  const lightChoices = dedupe(lightOptions);
+  // Check which buttons would overfill (disable if overfill)
+  const isWaterButtonDisabled = (amt: number) => savedWater + amt > TREE_TANK_CAPACITY;
+  const isLightButtonDisabled = (amt: number) => savedLight + amt * ELECTRICITY_VISUAL_GAIN > TREE_TANK_CAPACITY;
 
   const coverColor = (pct: number) => {
     if (pct < 60) return "hsl(var(--destructive))";
@@ -551,13 +540,17 @@ const TreeMaintenanceView = () => {
   const currentWeekWaterPct = Math.round((currentWeekWater / Math.max(1, waterTarget)) * 100);
   const currentWeekLightPct = Math.round((currentWeekLight / Math.max(1, electricityTarget)) * 100);
 
+  // Display score based ONLY on tree tank fullness
+  const displayScore = Math.round((savedWater + savedLight) / 2);
+  const displayState = getTreeState(displayScore);
+
   return (
     <div className="flex flex-col gap-6">
       <div className="w-full">
         <div className="w-full p-6 rounded-2xl bg-card border border-border shadow-sm">
           <AmbientTree
-            state={state}
-            score={score}
+            state={displayState}
+            score={displayScore}
             transitionSpeed={speed}
             waterLevel={treeWaterLevel * 1.6}
             lightLevel={treeLightLevel * 1.6}
@@ -643,13 +636,15 @@ const TreeMaintenanceView = () => {
                 .map((amt, index) => {
                   const label = waterActionLabels[index] ?? "Prihranek vode";
                   const fillHeight = Math.max(18, Math.min(100, Math.round((amt / Math.max(...waterChoices)) * 100)));
+                  const isDisabled = isWaterButtonDisabled(amt);
 
                   return (
                     <Button
                       key={`water-${amt}-${index}`}
                       size="sm"
                       variant="outline"
-                      onClick={() => handleAdd(amt, 0, label, null)}
+                      disabled={isDisabled}
+                      onClick={() => !isDisabled && handleAdd(amt, 0, label, null)}
                       className="h-auto min-h-20 px-3 py-3 text-left justify-start"
                     >
                       <span className="flex w-full items-center gap-3">
@@ -684,13 +679,15 @@ const TreeMaintenanceView = () => {
                 .map((amt, index) => {
                   const label = electricityActionLabels[index] ?? "Prihranek elektrike";
                   const fillHeight = Math.max(18, Math.min(100, Math.round((amt / Math.max(...lightChoices)) * 100)));
+                  const isDisabled = isLightButtonDisabled(amt);
 
                   return (
                     <Button
                       key={`light-${amt}-${index}`}
                       size="sm"
                       variant="outline"
-                      onClick={() => handleAdd(0, amt, null, label)}
+                      disabled={isDisabled}
+                      onClick={() => !isDisabled && handleAdd(0, amt, null, label)}
                       className="h-auto min-h-20 px-3 py-3 text-left justify-start"
                     >
                       <span className="flex w-full items-center gap-3">
